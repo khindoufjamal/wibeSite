@@ -1,0 +1,254 @@
+@Data
+public class SagEndpoint {
+    private String hostname;
+    private int port;
+    private String dn;
+    private String certPath;
+    private long timeout = 30L;
+}
+
+@Data
+@Configuration
+@ConfigurationProperties(prefix = "swift")
+public class SwiftConfiguration {
+    private List<SagEndpoint> sagList; // au lieu d’un seul endpoint
+}
+
+
+public Tuple2<String, String> call(String request) {
+
+    for (SagEndpoint sag : config.getSagList()) {
+
+        log.info("Trying SAG: {}:{}", sag.getHostname(), sag.getPort());
+
+        try {
+            HandleParameters params = getHandleParameter(sag);
+            SagHandle handle = connect(params);
+
+            log.info("Connected to SAG {}", sag.getHostname());
+
+            // === Build message
+            Message msg = buildSwiftMessage(request);
+
+            // === Compute LMAC
+            LMAC lmac = getLmac(msg).get();
+
+            // === Send request
+            Message response = getMessage(handle, msg).get();
+
+            // === Verify signature
+            verifyLmac(lmac, response);
+
+            disconnect(handle);
+
+            return Tuple.of(msg.getLetter(), response.getLetter());
+        }
+        catch (Exception e) {
+            log.error("SAG {} is unavailable: {}", sag.getHostname(), e.getMessage());
+            // on essaye la SAG suivante
+        }
+    }
+
+    // Aucune SAG accessible → fallback file QD
+    log.error("All SAGs are down → pushing request to QD");
+    pushToQD(request);
+
+    throw new IllegalStateException("No SAG available");
+}
+
+
+private HandleParameters getHandleParameter(SagEndpoint sag) {
+    X509Certificate cert = loadCertificate(sag.getCertPath());
+    return new HandleParameters(
+            sag.getHostname(),
+            sag.getPort(),
+            cert,
+            sag.getDn()
+    );
+}
+
+
+sagHandle.connect(config.getTimeout() > 0 ? config.getTimeout() : 30L, TimeUnit.SECONDS);
+
+
+
+
+
+
+
+@ExtendWith(MockitoExtension.class)
+class SwiftServiceTest {
+
+    @Mock
+    private SwiftConfiguration config;
+
+    private TestSwiftService service;  // sous-classe de test
+
+    @BeforeEach
+    void setUp() {
+        service = new TestSwiftService(config);
+    }
+
+    // Sous-classe pour pouvoir stubber le comportement interne
+    static class TestSwiftService extends SwiftService {
+
+        // flags & stubs
+        List<SagEndpoint> sagList;
+        Map<SagEndpoint, RuntimeException> connectError = new HashMap<>();
+        Map<SagEndpoint, RuntimeException> getMessageError = new HashMap<>();
+        Map<SagEndpoint, SagHandle> handles = new HashMap<>();
+        List<SagHandle> disconnected = new ArrayList<>();
+        boolean pushToQdCalled = false;
+
+        TestSwiftService(SwiftConfiguration config) {
+            super(config);
+        }
+
+        @Override
+        protected SagHandle connect(HandleParameters params) throws Exception {
+            SagEndpoint sag = findSagFromParams(params);
+            if (connectError.containsKey(sag)) {
+                throw connectError.get(sag);
+            }
+            SagHandle handle = Mockito.mock(SagHandle.class);
+            handles.put(sag, handle);
+            return handle;
+        }
+
+        @Override
+        protected void disconnect(SagHandle handle) {
+            disconnected.add(handle);
+        }
+
+        @Override
+        protected LMAC getLmac(Message message) {
+            // simplification : retourner un mock
+            return Mockito.mock(LMAC.class);
+        }
+
+        @Override
+        protected Message getMessage(SagHandle handle, Message request) {
+            SagEndpoint sag = findSagFromHandle(handle);
+            if (getMessageError.containsKey(sag)) {
+                throw getMessageError.get(sag);
+            }
+            Message response = new Message();
+            response.setLetter("<response/>");
+            return response;
+        }
+
+        @Override
+        protected void verifyLmac(LMAC lmac, Message response) {
+            // rien, on suppose valid
+        }
+
+        @Override
+        protected void pushToQD(String request) {
+            this.pushToQdCalled = true;
+        }
+
+        // Helpers pour mapper HandleParameters/SagHandle vers SagEndpoint
+        private SagEndpoint findSagFromParams(HandleParameters params) {
+            return sagList.stream()
+                    .filter(s -> s.getHostname().equals(params.getHostname())
+                            && s.getPort() == params.getPort())
+                    .findFirst()
+                    .orElseThrow();
+        }
+
+        private SagEndpoint findSagFromHandle(SagHandle handle) {
+            // dans un vrai test on stockerait le mapping handle → SAG
+            // pour simplifier ici on retourne le premier
+            return sagList.get(0);
+        }
+    }
+
+    // ---------- TESTS -----------
+
+    @Test
+    void should_use_first_sag_when_ok() {
+        SagEndpoint sag1 = new SagEndpoint();
+        sag1.setHostname("sag1");
+        sag1.setPort(48002);
+
+        when(config.getSagList()).thenReturn(List.of(sag1));
+        service.sagList = List.of(sag1);
+
+        Tuple2<String, String> result = service.call("<request/>");
+
+        // call OK → pas de mise en QD
+        assertThat(service.pushToQdCalled).isFalse();
+        // une seule connexion
+        assertThat(service.handles).hasSize(1);
+        assertThat(service.disconnected).hasSize(1);
+        // la réponse contient bien ce qu'on attend (simplifié)
+        assertThat(result._2).contains("<response");
+    }
+
+    @Test
+    void should_fallback_on_second_sag_when_first_connect_fails() {
+        SagEndpoint sag1 = new SagEndpoint();
+        sag1.setHostname("sag1");
+        sag1.setPort(48002);
+
+        SagEndpoint sag2 = new SagEndpoint();
+        sag2.setHostname("sag2");
+        sag2.setPort(48003);
+
+        when(config.getSagList()).thenReturn(List.of(sag1, sag2));
+        service.sagList = List.of(sag1, sag2);
+
+        // SAG1 KO à la connexion
+        service.connectError.put(sag1, new RuntimeException("SAG1 down"));
+
+        Tuple2<String, String> result = service.call("<request/>");
+
+        // On a bien tenté les 2 SAG
+        assertThat(service.handles.keySet()).containsExactlyInAnyOrder(sag2); // sag1 n'a pas de handle
+        // SAG2 a permis de répondre
+        assertThat(result._2).contains("<response");
+        assertThat(service.pushToQdCalled).isFalse();
+    }
+
+    @Test
+    void should_push_to_qd_when_all_sags_fail() {
+        SagEndpoint sag1 = new SagEndpoint();
+        sag1.setHostname("sag1");
+        sag1.setPort(48002);
+
+        SagEndpoint sag2 = new SagEndpoint();
+        sag2.setHostname("sag2");
+        sag2.setPort(48003);
+
+        when(config.getSagList()).thenReturn(List.of(sag1, sag2));
+        service.sagList = List.of(sag1, sag2);
+
+        service.connectError.put(sag1, new RuntimeException("SAG1 down"));
+        service.connectError.put(sag2, new RuntimeException("SAG2 down"));
+
+        assertThatThrownBy(() -> service.call("<request/>"))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(service.pushToQdCalled).isTrue();
+    }
+
+    @Test
+    void should_disconnect_handle_when_error_after_connect() {
+        SagEndpoint sag1 = new SagEndpoint();
+        sag1.setHostname("sag1");
+        sag1.setPort(48002);
+
+        when(config.getSagList()).thenReturn(List.of(sag1));
+        service.sagList = List.of(sag1);
+
+        // forcer une erreur au moment de getMessage
+        service.getMessageError.put(sag1, new RuntimeException("Transport error"));
+
+        assertThatThrownBy(() -> service.call("<request/>"))
+                .isInstanceOf(IllegalStateException.class);
+
+        // Handle créé puis bien déconnecté
+        assertThat(service.handles).hasSize(1);
+        assertThat(service.disconnected).hasSize(1);
+    }
+          }
