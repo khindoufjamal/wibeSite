@@ -287,3 +287,131 @@ public class SwiftConfiguration {
         private long timeout;
     }
 }
+
+
+_______
+
+
+    @Slf4j
+@Service
+@RequiredArgsConstructor
+public class SagConnectionService {
+
+    private final SwiftConfiguration config;
+    private final RetryTemplate sagRetryTemplate;
+
+    /**
+     * Shuffle UNE FOIS la liste de 4 SAG,
+     * puis Spring Retry exécute la même séquence jusqu'à 3 fois.
+     */
+    public SagHandle connectWithRetry() {
+
+        List<SwiftConfiguration.SagEndpoint> orderedEndpoints =
+                new ArrayList<>(config.getSagList());
+
+        if (orderedEndpoints.isEmpty()) {
+            throw new IllegalStateException("No SAG configured");
+        }
+
+        // Shuffle UNE fois
+        Collections.shuffle(orderedEndpoints);
+        log.info("SAG order for this message: {}", orderedEndpoints.stream()
+                .map(SwiftConfiguration.SagEndpoint::getHostname)
+                .toList());
+
+        // Retry sur la même liste ordonnée
+        return sagRetryTemplate.execute(context -> {
+            int attempt = context.getRetryCount() + 1;
+            log.info("SAG connection attempt {}...", attempt);
+
+            for (SwiftConfiguration.SagEndpoint sag : orderedEndpoints) {
+                try {
+                    return connectSingleSag(sag);
+                } catch (Exception e) {
+                    log.warn("[KO] SAG {}:{} - {} (EVIT/ONC Warning)",
+                            sag.getHostname(), sag.getPort(), e.getMessage());
+                }
+            }
+
+            // Aucune SAG connectée pendant CETTE tentative ⇒ on déclenche un retry
+            log.warn("No SAG reachable in attempt {}", attempt);
+            throw new NoSagAvailableException("No SAG reachable in attempt " + attempt);
+        });
+    }
+
+    private SagHandle connectSingleSag(SwiftConfiguration.SagEndpoint sag) throws Exception {
+        HandleParameters params = buildHandleParameters(sag);
+        SagHandle handle = new SagHandle(params);
+
+        long timeout = sag.getTimeout() > 0 ? sag.getTimeout() : config.getTimeout();
+        handle.connect(timeout, TimeUnit.SECONDS);
+
+        log.info("[OK] Connected to SAG {}:{}", sag.getHostname(), sag.getPort());
+        return handle;
+    }
+
+    public void disconnectQuietly(SagHandle handle) {
+        if (handle == null) return;
+        try {
+            if (handle.isConnected()) handle.disconnect();
+        } catch (Exception e) {
+            log.error("Error while disconnecting SAG handle", e);
+        }
+    }
+
+    private HandleParameters buildHandleParameters(SwiftConfiguration.SagEndpoint sag) {
+        X509Certificate cert = loadCertificate(sag.getCertPath());
+        return new HandleParameters(
+                sag.getHostname(),
+                sag.getPort(),
+                cert,
+                sag.getDn()
+        );
+    }
+
+    private X509Certificate loadCertificate(String path) {
+        try (InputStream is = new FileInputStream(path)) {
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            return (X509Certificate) cf.generateCertificate(is);
+        } catch (IOException | CertificateException e) {
+            log.error("[Error] Failed to load certificate {}", path, e);
+            return null;
+        }
+    }
+}
+
+
+
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class SwiftService {
+
+    private final SwiftConfiguration config;
+    private final SagConnectionService sagConnectionService;
+
+    public Tuple2<String, String> call(String request) {
+
+        SagHandle handle;
+        try {
+            handle = sagConnectionService.connectWithRetry();
+        } catch (NoSagAvailableException e) {
+            log.error("All SAG attempts failed, pushing message to QD (EVIT/ONC Sévère)", e);
+            pushToQD(request);
+            throw new IllegalStateException("No SAG available after retries", e);
+        }
+
+        try {
+            // à partir d’ici: AUCUN retry SAG
+            Message msg = buildMessage(request);
+            LMAC lmac = getLmac(msg);
+            Message response = getMessage(handle, msg);
+            verifyLmac(lmac, response);
+            return Tuple.of(msg.getLetter(), response.getLetter());
+        } finally {
+            sagConnectionService.disconnectQuietly(handle);
+        }
+    }
+}
+
