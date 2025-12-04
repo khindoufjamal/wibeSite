@@ -252,3 +252,38 @@ class SwiftServiceTest {
         assertThat(service.disconnected).hasSize(1);
     }
           }
+
+
+
+
+@Data
+@Configuration
+@ConfigurationProperties(value = "swift")
+public class SwiftConfiguration {
+
+    // === configuration actuelle (single SAG) ===
+    private String hostname;
+    private Integer port;
+    private String partner;
+    private String requestSignatureDN;
+    private String requestVerifySignatureDN;
+    private String key;
+    private String certPath;
+    private String dn;
+    private long timeout;
+    private boolean verifySignature;
+    private Boolean flattenVerifyRequest;
+    private Boolean flattenSignRequest;
+
+    // === nouvelle configuration multi-SAG ===
+    private List<SagEndpoint> sagList;
+
+    @Data
+    public static class SagEndpoint {
+        private String hostname;
+        private Integer port;
+        private String dn;
+        private String certPath;
+        private long timeout;
+    }
+}
