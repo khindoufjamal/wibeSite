@@ -1,5 +1,7 @@
-import com.ttet.t2s.sabr.config.SwiftConfiguration;
-import com.ttet.t2s.sabr.config.SwiftConfiguration.SagEndpoint;
+package com.stet.t2s.sabr.domain.swift;
+
+import com.stet.t2s.sabr.config.SwiftConfiguration;
+import com.stet.t2s.sabr.config.SwiftConfiguration.SagEndpoint;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -9,6 +11,7 @@ import org.springframework.retry.support.RetryTemplate;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -25,21 +28,24 @@ class SagConnectionServiceTest {
     void setUp() {
         config = mock(SwiftConfiguration.class);
 
-        // RetryTemplate : 3 tentatives, pas de vraie attente en test
+        // RetryTemplate : 3 tentatives, pas d’attente en test
         retryTemplate = new RetryTemplate();
+
         SimpleRetryPolicy retryPolicy = new SimpleRetryPolicy(
                 3,
-                Map.of(NoSagAvailableException.class, true)
+                Map.of(NoSagAvailableException.class, true) // si tu es en Java 8 => utilise une HashMap
         );
         retryTemplate.setRetryPolicy(retryPolicy);
+
         FixedBackOffPolicy backOff = new FixedBackOffPolicy();
-        backOff.setBackOffPeriod(0L); // 0 ms pour les tests
+        backOff.setBackOffPeriod(0L); // pas de pause entre tentatives en TU
         retryTemplate.setBackOffPolicy(backOff);
 
-        // spy pour stubber connectSingleSag(...)
-        service = Mockito.spy(new SagConnectionService(config, retryTemplate));
+        // spy sur l’implémentation réelle
+        SagConnectionService realService = new SagConnectionService(config, retryTemplate);
+        service = Mockito.spy(realService);
 
-        // 4 endpoints dans la conf
+        // 4 SAG dans la conf
         when(config.getSagList()).thenReturn(List.of(
                 sag("sag1", 48001),
                 sag("sag2", 48002),
@@ -62,47 +68,44 @@ class SagConnectionServiceTest {
     void connectWithRetry_should_return_handle_on_first_attempt() throws Exception {
         SagHandle handle = mock(SagHandle.class);
 
-        // Peu importe la SAG, on réussit
+        // Peu importe la SAG, la connexion réussit
         doReturn(handle).when(service).connectSingleSag(any());
 
         SagHandle result = service.connectWithRetry();
 
         assertThat(result).isSameAs(handle);
-        // connectSingleSag appelé une seule fois (première SAG du 1er cycle)
+        // Une seule connexion (première SAG du premier cycle)
         verify(service, times(1)).connectSingleSag(any());
     }
 
-    // ===== TEST 2 : échec sur tous les endpoints au 1er cycle,
-    //                succès sur le début du 2ème cycle =====
+    // ===== TEST 2 : 1er cycle KO sur les 4 SAG, 2ème cycle OK dès la 1ère SAG =====
 
     @Test
     void connectWithRetry_should_retry_cycle_when_all_sags_fail_once_then_succeed() throws Exception {
         SagHandle handle = mock(SagHandle.class);
+        AtomicInteger counter = new AtomicInteger(0);
 
-        // 4 premiers appels -> KO (cycle 1)
-        // 5ème appel -> OK (première SAG du cycle 2)
+        // 4 premiers appels -> KO (cycle 1), 5e appel -> OK (début cycle 2)
         doAnswer(invocation -> {
-            int callIndex = invocation.getInvocationCount(); // 1..N
-            if (callIndex <= 4) {
+            int callIndex = counter.incrementAndGet();
+            if (callIndex <= 4) {       // 4 SAG du 1er cycle
                 throw new RuntimeException("SAG down");
             }
-            return handle;
+            return handle;              // 1ère SAG du 2e cycle
         }).when(service).connectSingleSag(any());
 
         SagHandle result = service.connectWithRetry();
 
-        // On obtient bien le handle
         assertThat(result).isSameAs(handle);
-
-        // 4 appels (cycle1 KO) + 1 appel (cycle2 OK) = 5
+        // 4 KO + 1 OK = 5 appels au total
         verify(service, times(5)).connectSingleSag(any());
     }
 
-    // ===== TEST 3 : échec sur tous les endpoints pour les 3 tentatives =====
+    // ===== TEST 3 : 3 cycles complets KO (4 SAG * 3) => exception =====
 
     @Test
     void connectWithRetry_should_throw_NoSagAvailableException_after_all_attempts_fail() throws Exception {
-        // Tous les appels à connectSingleSag jettent une exception technique
+        // Tous les appels à connectSingleSag jettent une exception
         doThrow(new RuntimeException("SAG down"))
                 .when(service).connectSingleSag(any());
 
@@ -112,4 +115,4 @@ class SagConnectionServiceTest {
         // 4 SAG * 3 tentatives = 12 appels
         verify(service, times(12)).connectSingleSag(any());
     }
-}
+            }
