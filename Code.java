@@ -425,3 +425,10 @@ public class SwiftService {
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-aop</artifactId>
 </dependency>
+
+
+    public class NoSagAvailableException extends RuntimeException {
+    public NoSagAvailableException(String message) {
+        super(message);
+    }
+}
