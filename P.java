@@ -1,202 +1,227 @@
 Parfait 👍
-On va faire un vrai test unitaire de configuration Spring, qui vérifie que :
+Là on est exactement au bon endroit pour bloquer le problème à la source : au chargement de la configuration, avant même que le service démarre.
 
-✅ la configuration valide démarre
-
-❌ une liste SAG vide fait échouer le binding
-
-❌ un SAG incomplet fait échouer le binding
-
-❌ attemptNumber <= 0 est refusé
-
-
-👉 On utilise les outils Spring Boot dédiés aux @ConfigurationProperties (c’est propre, rapide, et sans contexte applicatif complet).
+Je te propose une solution propre, Spring-standard, robuste, avec Bean Validation + un validateur métier pour la liste SAG.
 
 
 ---
 
-🧪 Test unitaire de SwiftConfiguration
+🎯 Objectif
 
-1️⃣ Dépendance requise (normalement déjà présente)
+👉 Empêcher démarrage de l’application si :
 
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-test</artifactId>
-    <scope>test</scope>
-</dependency>
+sagList est null
+
+sagList est vide
+
+un SagEndpoint est incomplet (hostname, port, certPath, dn)
+
+attemptNumber <= 0
+
+backOff < 0
+
 
 
 ---
 
-2️⃣ Classe de test dédiée à la configuration
+1️⃣ Activer la validation sur @ConfigurationProperties
+
+✅ Modifier SwiftConfiguration
 
 package com.stet.t2s.sabr.config;
 
-import org.junit.jupiter.api.Test;
-import org.springframework.boot.context.properties.bind.BindException;
-import org.springframework.boot.context.properties.bind.validation.BindValidationException;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
+import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.validation.annotation.Validated;
 
-import static org.assertj.core.api.Assertions.*;
+import java.util.List;
 
-class SwiftConfigurationTest {
+@Data
+@Configuration
+@ConfigurationProperties(prefix = "swift")
+@Validated
+public class SwiftConfiguration {
 
-    private final ApplicationContextRunner contextRunner =
-            new ApplicationContextRunner()
-                    .withUserConfiguration(TestConfig.class);
+    // === Core configuration ===
 
-    // =====================================================
-    // ✅ CONFIGURATION VALIDE
-    // =====================================================
-    @Test
-    void should_load_configuration_when_valid() {
-        contextRunner
-                .withPropertyValues(
-                        "swift.partner=SABR-KAL",
-                        "swift.requestSignatureDN=dn-sign",
-                        "swift.requestVerifySignatureDN=dn-verify",
-                        "swift.key=secret",
-                        "swift.verify-signature=true",
-                        "swift.attemptNumber=3",
-                        "swift.backOff=1000",
+    @NotBlank(message = "swift.partner must not be blank")
+    private String partner;
 
-                        "swift.sagList[0].hostname=10.0.0.1",
-                        "swift.sagList[0].port=58002",
-                        "swift.sagList[0].certPath=/tmp/sag1.crt",
-                        "swift.sagList[0].dn=cn=SAG1"
-                )
-                .run(context -> {
-                    assertThat(context).hasNotFailed();
+    @NotBlank(message = "swift.requestSignatureDN must not be blank")
+    private String requestSignatureDN;
 
-                    SwiftConfiguration config =
-                            context.getBean(SwiftConfiguration.class);
+    @NotBlank(message = "swift.requestVerifySignatureDN must not be blank")
+    private String requestVerifySignatureDN;
 
-                    assertThat(config.getSagList()).hasSize(1);
-                    assertThat(config.getAttemptNumber()).isEqualTo(3);
-                });
+    @NotBlank(message = "swift.key must not be blank")
+    private String key;
+
+    private boolean verifySignature;
+    private boolean flattenVerifyRequest;
+    private boolean flattenSignRequest;
+
+    // === Retry / SAG configuration ===
+
+    @NotNull(message = "swift.sagList must be defined")
+    @Size(min = 1, message = "swift.sagList must contain at least one SAG")
+    @Valid
+    private List<SagEndpoint> sagList;
+
+    @Min(value = 1, message = "swift.attemptNumber must be >= 1")
+    private int attemptNumber;
+
+    @Min(value = 0, message = "swift.backoff must be >= 0")
+    private long backOff;
+}
+
+📌 Ce que ça garantit déjà :
+
+sagList=null ❌ → KO au démarrage
+
+sagList=[] ❌ → KO au démarrage
+
+tentative négative ❌ → KO au démarrage
+
+
+
+---
+
+2️⃣ Valider chaque SagEndpoint
+
+✅ Modifier SagEndpoint
+
+package com.stet.t2s.sabr.config;
+
+import jakarta.validation.constraints.*;
+import lombok.Data;
+
+@Data
+public class SagEndpoint {
+
+    @NotBlank(message = "sag.hostname must not be blank")
+    private String hostname;
+
+    @Min(value = 1, message = "sag.port must be > 0")
+    private int port;
+
+    @NotBlank(message = "sag.certPath must not be blank")
+    private String certPath;
+
+    @NotBlank(message = "sag.dn must not be blank")
+    private String dn;
+
+    @Min(value = 1, message = "sag.timeout must be > 0")
+    private long timeout = 30L;
+}
+
+📌 Résultat :
+Un SAG mal configuré → l’appli ne démarre pas, message clair.
+
+
+---
+
+3️⃣ (Option RECOMMANDÉE) Validateur métier : au moins N SAG
+
+Si ton métier impose au moins 2 ou 4 SAG, on ajoute un validateur custom.
+
+🔹 Annotation custom
+
+@Target({ ElementType.FIELD })
+@Retention(RetentionPolicy.RUNTIME)
+@Constraint(validatedBy = MinSagValidator.class)
+@Documented
+public @interface MinSag {
+
+    int value();
+
+    String message() default "Not enough SAG configured";
+
+    Class<?>[] groups() default {};
+
+    Class<? extends Payload>[] payload() default {};
+}
+
+🔹 Implémentation
+
+public class MinSagValidator implements ConstraintValidator<MinSag, List<SagEndpoint>> {
+
+    private int min;
+
+    @Override
+    public void initialize(MinSag constraintAnnotation) {
+        this.min = constraintAnnotation.value();
     }
 
-    // =====================================================
-    // ❌ LISTE SAG VIDE
-    // =====================================================
-    @Test
-    void should_fail_when_sag_list_is_empty() {
-        contextRunner
-                .withPropertyValues(
-                        "swift.partner=SABR-KAL",
-                        "swift.requestSignatureDN=dn-sign",
-                        "swift.requestVerifySignatureDN=dn-verify",
-                        "swift.key=secret",
-                        "swift.attemptNumber=3",
-                        "swift.backOff=1000"
-                        // ⚠️ aucune sagList
-                )
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .isInstanceOf(BindValidationException.class)
-                            .hasMessageContaining("sagList");
-                });
-    }
-
-    // =====================================================
-    // ❌ SAG INCOMPLET (hostname manquant)
-    // =====================================================
-    @Test
-    void should_fail_when_sag_is_invalid() {
-        contextRunner
-                .withPropertyValues(
-                        "swift.partner=SABR-KAL",
-                        "swift.requestSignatureDN=dn-sign",
-                        "swift.requestVerifySignatureDN=dn-verify",
-                        "swift.key=secret",
-                        "swift.attemptNumber=3",
-                        "swift.backOff=1000",
-
-                        "swift.sagList[0].port=58002",
-                        "swift.sagList[0].certPath=/tmp/sag1.crt",
-                        "swift.sagList[0].dn=cn=SAG1"
-                        // ❌ hostname manquant
-                )
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .isInstanceOf(BindValidationException.class)
-                            .hasMessageContaining("hostname");
-                });
-    }
-
-    // =====================================================
-    // ❌ attemptNumber invalide
-    // =====================================================
-    @Test
-    void should_fail_when_attempt_number_is_invalid() {
-        contextRunner
-                .withPropertyValues(
-                        "swift.partner=SABR-KAL",
-                        "swift.requestSignatureDN=dn-sign",
-                        "swift.requestVerifySignatureDN=dn-verify",
-                        "swift.key=secret",
-                        "swift.attemptNumber=0", // ❌ invalide
-                        "swift.backOff=1000",
-
-                        "swift.sagList[0].hostname=10.0.0.1",
-                        "swift.sagList[0].port=58002",
-                        "swift.sagList[0].certPath=/tmp/sag1.crt",
-                        "swift.sagList[0].dn=cn=SAG1"
-                )
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .isInstanceOf(BindValidationException.class)
-                            .hasMessageContaining("attemptNumber");
-                });
-    }
-
-    // =====================================================
-    // CONFIG TEST
-    // =====================================================
-    @EnableConfigurationProperties(SwiftConfiguration.class)
-    static class TestConfig {
+    @Override
+    public boolean isValid(List<SagEndpoint> value, ConstraintValidatorContext context) {
+        return value != null && value.size() >= min;
     }
 }
 
+🔹 Utilisation dans SwiftConfiguration
 
----
-
-3️⃣ Ce que ce test garantit (important)
-
-✔ Impossible de démarrer si :
-
-sagList absente
-
-sagList vide
-
-SagEndpoint incomplet
-
-retry mal configuré
-
-
-✔ La validation est testée sans lancer l’application complète
-
-✔ Les erreurs sont lisibles et maintenables
+@MinSag(value = 2, message = "At least 2 SAG endpoints must be configured")
+@Valid
+private List<SagEndpoint> sagList;
 
 
 ---
 
-4️⃣ Résumé rapide
+4️⃣ Résultat final (comportement attendu)
 
-Cas	Résultat
+❌ Exemple KO au démarrage
 
-config valide	✅ OK
-sagList vide	❌ KO
-SAG incomplet	❌ KO
-attemptNumber = 0	❌ KO
+swift.sagList=
 
+⛔ Erreur claire :
+
+Binding validation errors on swift:
+ - swift.sagList must contain at least one SAG
 
 
 ---
 
-Si tu veux, au prochain message je peux te proposer un test d’intégration complet (avec @SpringBootTest) qui vérifie que SagConnectionService ne démarre jamais avec une mauvaise config.
+❌ SAG incomplet
+
+swift.sagList[0].hostname=
+
+⛔ Erreur :
+
+sag.hostname must not be blank
+
+
+---
+
+✅ Config valide
+
+➡️ L’application démarre
+➡️ SagConnectionService n’a plus besoin de vérifier isEmpty()
+➡️ Le bug ne peut plus revenir
+
+
+---
+
+5️⃣ BONUS (bonne pratique)
+
+Dans SagConnectionService, tu peux maintenant supprimer ce code défensif :
+
+if (orderedEndpoints.isEmpty()) {
+    throw new IllegalStateException("No SAG configured");
+}
+
+👉 La config est garantie valide par Spring.
+
+
+---
+
+✅ Verdict
+
+✔ Sécurité au démarrage
+✔ Erreurs explicites
+✔ Bug impossible à reproduire
+✔ Conforme Spring Boot / Clean Architecture
+
+Si tu veux, je peux aussi te fournir un test unitaire de validation de SwiftConfiguration (avec @ConfigurationPropertiesTest).
