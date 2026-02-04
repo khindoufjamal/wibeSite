@@ -1,59 +1,13 @@
-Parfait 👍
-On va faire un vrai test unitaire de configuration Spring, qui vérifie que :
 
-✅ la configuration valide démarre
-
-❌ une liste SAG vide fait échouer le binding
-
-❌ un SAG incomplet fait échouer le binding
-
-❌ attemptNumber <= 0 est refusé
-
-
-👉 On utilise les outils Spring Boot dédiés aux @ConfigurationProperties (c’est propre, rapide, et sans contexte applicatif complet).
-
-
----
-
-🧪 Test unitaire de SwiftConfiguration
-
-1️⃣ Dépendance requise (normalement déjà présente)
-
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-test</artifactId>
-    <scope>test</scope>
-</dependency>
-
-
----
-
-2️⃣ Classe de test dédiée à la configuration
-
-package com.stet.t2s.sabr.config;
-
-import org.junit.jupiter.api.Test;
-import org.springframework.boot.context.properties.bind.BindException;
-import org.springframework.boot.context.properties.bind.validation.BindValidationException;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-
-import static org.assertj.core.api.Assertions.*;
-
-class SwiftConfigurationTest {
-
-    private final ApplicationContextRunner contextRunner =
-            new ApplicationContextRunner()
-                    .withUserConfiguration(TestConfig.class);
-
-    // =====================================================
-    // ✅ CONFIGURATION VALIDE
-    // =====================================================
-    @Test
-    void should_load_configuration_when_valid() {
-        contextRunner
-                .withPropertyValues(
+     {% for sag in sagList %}
+swift.sagList[{{ loop.index0 }}].hostname={{ sag.hostname }}
+swift.sagList[{{ loop.index0 }}].port={{ sag.port }}
+swift.sagList[{{ loop.index0 }}].certPath={{ sag.certPath }}
+swift.sagList[{{ loop.index0 }}].dn={{ sag.dn }}
+{% endfor %}                   
+                        
+                        
+                        
                         "swift.partner=SABR-KAL",
                         "swift.requestSignatureDN=dn-sign",
                         "swift.requestVerifySignatureDN=dn-verify",
