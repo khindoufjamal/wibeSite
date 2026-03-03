@@ -1,227 +1,72 @@
-Parfait 👍
-Là on est exactement au bon endroit pour bloquer le problème à la source : au chargement de la configuration, avant même que le service démarre.
+Dans ton flow, IPEU / IPBE c’est justement le cas “spécial” : tu transformes le message entrant en IPMQ (XML) avant de construire MessageAR.
 
-Je te propose une solution propre, Spring-standard, robuste, avec Bean Validation + un validateur métier pour la liste SAG.
+Ce que ça implique
+
+Le message initial (JSON) d’IPEU/IPBE n’existe plus après createIPMQMsg(...
+MessageARFactory.build(...) est appelé après la transformation, donc :
+
+messageAR.content = le XML IPMQ (celui mis dans ActiveMQTextMessage#setText(xml))
+
+fillMsgAr(...) récupère les properties JMS (context, requestType, bic, typeFlux, etc.) qui ont été posées dans createIPMQMessage(eventIPAstI).
 
 
----
 
-🎯 Objectif
-
-👉 Empêcher démarrage de l’application si :
-
-sagList est null
-
-sagList est vide
-
-un SagEndpoint est incomplet (hostname, port, certPath, dn)
-
-attemptNumber <= 0
-
-backOff < 0
-
+➡️ Donc oui, pour IPEU/IPBE, MessageAR contient déjà tout ce qu’il faut pour reconstruire le message JMS “IPMQ” (pas le JSON original).
 
 
 ---
 
-1️⃣ Activer la validation sur @ConfigurationProperties
+Méthode pour reconstruire le JMS depuis MessageAR (cas IPEU / IPBE)
 
-✅ Modifier SwiftConfiguration
+Version Spring JMS (safe) : MessageCreator
 
-package com.stet.t2s.sabr.config;
+import javax.jms.Message;
+import javax.jms.Session;
+import javax.jms.TextMessage;
+import org.springframework.jms.core.MessageCreator;
 
-import jakarta.validation.Valid;
-import jakarta.validation.constraints.*;
-import lombok.Data;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.validation.annotation.Validated;
+public final class MessageARToJmsMapper {
 
-import java.util.List;
+  private MessageARToJmsMapper() {}
 
-@Data
-@Configuration
-@ConfigurationProperties(prefix = "swift")
-@Validated
-public class SwiftConfiguration {
+  public static MessageCreator toIpMqJmsMessage(MessageAR ar) {
+    return (Session session) -> {
+      TextMessage msg = session.createTextMessage(ar.getContent()); // XML IPMQ
 
-    // === Core configuration ===
+      // Repose les properties nécessaires au downstream
+      setStringProp(msg, Keys.JMS_ATTR_CONTEXT, ar.getTransferId());
+      setStringProp(msg, Keys.JMS_ATTR_FILE_COMPONENT, ar.getFileLocator());
+      setStringProp(msg, Keys.JMS_ATTR_REQUEST_TYPE, ar.getRequestType());
+      setStringProp(msg, Keys.JMS_ATTR_BIC_SYSTEM_EXTERN, ar.getBicSystemExterne());
+      setStringProp(msg, Keys.JMS_ATTR_TYPE_FLUX, ar.getTypeFlux());
+      setStringProp(msg, Keys.JMS_ATTR_TYPE_TRANSFERT, ar.getTypeTransfert());
+      setStringProp(msg, Keys.JMS_ATTR_MODE_TRANSFERT, ar.getModeTransfert());
 
-    @NotBlank(message = "swift.partner must not be blank")
-    private String partner;
+      return msg;
+    };
+  }
 
-    @NotBlank(message = "swift.requestSignatureDN must not be blank")
-    private String requestSignatureDN;
-
-    @NotBlank(message = "swift.requestVerifySignatureDN must not be blank")
-    private String requestVerifySignatureDN;
-
-    @NotBlank(message = "swift.key must not be blank")
-    private String key;
-
-    private boolean verifySignature;
-    private boolean flattenVerifyRequest;
-    private boolean flattenSignRequest;
-
-    // === Retry / SAG configuration ===
-
-    @NotNull(message = "swift.sagList must be defined")
-    @Size(min = 1, message = "swift.sagList must contain at least one SAG")
-    @Valid
-    private List<SagEndpoint> sagList;
-
-    @Min(value = 1, message = "swift.attemptNumber must be >= 1")
-    private int attemptNumber;
-
-    @Min(value = 0, message = "swift.backoff must be >= 0")
-    private long backOff;
-}
-
-📌 Ce que ça garantit déjà :
-
-sagList=null ❌ → KO au démarrage
-
-sagList=[] ❌ → KO au démarrage
-
-tentative négative ❌ → KO au démarrage
-
-
-
----
-
-2️⃣ Valider chaque SagEndpoint
-
-✅ Modifier SagEndpoint
-
-package com.stet.t2s.sabr.config;
-
-import jakarta.validation.constraints.*;
-import lombok.Data;
-
-@Data
-public class SagEndpoint {
-
-    @NotBlank(message = "sag.hostname must not be blank")
-    private String hostname;
-
-    @Min(value = 1, message = "sag.port must be > 0")
-    private int port;
-
-    @NotBlank(message = "sag.certPath must not be blank")
-    private String certPath;
-
-    @NotBlank(message = "sag.dn must not be blank")
-    private String dn;
-
-    @Min(value = 1, message = "sag.timeout must be > 0")
-    private long timeout = 30L;
-}
-
-📌 Résultat :
-Un SAG mal configuré → l’appli ne démarre pas, message clair.
-
-
----
-
-3️⃣ (Option RECOMMANDÉE) Validateur métier : au moins N SAG
-
-Si ton métier impose au moins 2 ou 4 SAG, on ajoute un validateur custom.
-
-🔹 Annotation custom
-
-@Target({ ElementType.FIELD })
-@Retention(RetentionPolicy.RUNTIME)
-@Constraint(validatedBy = MinSagValidator.class)
-@Documented
-public @interface MinSag {
-
-    int value();
-
-    String message() default "Not enough SAG configured";
-
-    Class<?>[] groups() default {};
-
-    Class<? extends Payload>[] payload() default {};
-}
-
-🔹 Implémentation
-
-public class MinSagValidator implements ConstraintValidator<MinSag, List<SagEndpoint>> {
-
-    private int min;
-
-    @Override
-    public void initialize(MinSag constraintAnnotation) {
-        this.min = constraintAnnotation.value();
+  private static void setStringProp(Message msg, String key, String value) throws Exception {
+    if (value != null && !value.isBlank()) {
+      msg.setStringProperty(key, value);
     }
-
-    @Override
-    public boolean isValid(List<SagEndpoint> value, ConstraintValidatorContext context) {
-        return value != null && value.size() >= min;
-    }
+  }
 }
 
-🔹 Utilisation dans SwiftConfiguration
+Utilisation :
 
-@MinSag(value = 2, message = "At least 2 SAG endpoints must be configured")
-@Valid
-private List<SagEndpoint> sagList;
-
-
----
-
-4️⃣ Résultat final (comportement attendu)
-
-❌ Exemple KO au démarrage
-
-swift.sagList=
-
-⛔ Erreur claire :
-
-Binding validation errors on swift:
- - swift.sagList must contain at least one SAG
-
-
----
-
-❌ SAG incomplet
-
-swift.sagList[0].hostname=
-
-⛔ Erreur :
-
-sag.hostname must not be blank
-
-
----
-
-✅ Config valide
-
-➡️ L’application démarre
-➡️ SagConnectionService n’a plus besoin de vérifier isEmpty()
-➡️ Le bug ne peut plus revenir
-
-
----
-
-5️⃣ BONUS (bonne pratique)
-
-Dans SagConnectionService, tu peux maintenant supprimer ce code défensif :
-
-if (orderedEndpoints.isEmpty()) {
-    throw new IllegalStateException("No SAG configured");
+if (List.of(IPEU.getLabel(), IPBE.getLabel()).contains(codeSe)) {
+  jmsTemplate.send(destinationQueue, MessageARToJmsMapper.toIpMqJmsMessage(messageAR));
 }
 
-👉 La config est garantie valide par Spring.
-
 
 ---
 
-✅ Verdict
+Point à retenir
 
-✔ Sécurité au démarrage
-✔ Erreurs explicites
-✔ Bug impossible à reproduire
-✔ Conforme Spring Boot / Clean Architecture
+✅ Reconstruction OK pour IPEU/IPBE au format IPMQ (XML + props).
 
-Si tu veux, je peux aussi te fournir un test unitaire de validation de SwiftConfiguration (avec @ConfigurationPropertiesTest).
+❌ Impossible de reconstruire le JSON initial (tu l’as jeté lors de createIPMQMsg), sauf si tu le sauvegardes explicitement (ex: messageAR.setRawIncoming(...) avant transformation).
+
+
+Si tu me dis sur quelle queue tu veux le renvoyer (même queue d’entrée ? queue “core” ? DLQ/retry ?), je te donne la version “retry propre” (incluant JMSXDeliveryCount, headers de traçabilité, et stratégie de correlationId).
