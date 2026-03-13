@@ -1,4 +1,11 @@
 
+url: failover:({{ agi_activemq.protocol | default('ssl', true) }}://{{ hostvars[host]['guest.ipAddress'] }}:{{ agi_activemq.port | default('61617', true) }}?socket.verifyHostName={{ agi_activemq.options.socketVerifyHostName | default('false') }})?timeout={{ agi_activemq.options.timeout | default('3000') }}&maxReconnectAttempts={{ agi_activemq.options.maxReconnectAttempts | default('0') }}
+
+
+
+
+
+
      {% for sag in sagList %}
 swift.sagList[{{ loop.index0 }}].hostname={{ sag.hostname }}
 swift.sagList[{{ loop.index0 }}].port={{ sag.port }}
