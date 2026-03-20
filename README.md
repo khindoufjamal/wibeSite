@@ -1,163 +1,52 @@
-
-url: failover:({{ agi_activemq.protocol | default('ssl', true) }}://{{ hostvars[host]['guest.ipAddress'] }}:{{ agi_activemq.port | default('61617', true) }}?socket.verifyHostName={{ agi_activemq.options.socketVerifyHostName | default('false') }})?timeout={{ agi_activemq.options.timeout | default('3000') }}&maxReconnectAttempts={{ agi_activemq.options.maxReconnectAttempts | default('0') }}
-
-
-
-
-
-
-     {% for sag in sagList %}
-swift.sagList[{{ loop.index0 }}].hostname={{ sag.hostname }}
-swift.sagList[{{ loop.index0 }}].port={{ sag.port }}
-swift.sagList[{{ loop.index0 }}].certPath={{ sag.certPath }}
-swift.sagList[{{ loop.index0 }}].dn={{ sag.dn }}
-{% endfor %}                   
-                        
-                        
-                        
-                        "swift.partner=SABR-KAL",
-                        "swift.requestSignatureDN=dn-sign",
-                        "swift.requestVerifySignatureDN=dn-verify",
-                        "swift.key=secret",
-                        "swift.verify-signature=true",
-                        "swift.attemptNumber=3",
-                        "swift.backOff=1000",
-
-                        "swift.sagList[0].hostname=10.0.0.1",
-                        "swift.sagList[0].port=58002",
-                        "swift.sagList[0].certPath=/tmp/sag1.crt",
-                        "swift.sagList[0].dn=cn=SAG1"
-                )
-                .run(context -> {
-                    assertThat(context).hasNotFailed();
-
-                    SwiftConfiguration config =
-                            context.getBean(SwiftConfiguration.class);
-
-                    assertThat(config.getSagList()).hasSize(1);
-                    assertThat(config.getAttemptNumber()).isEqualTo(3);
-                });
-    }
-
-    // =====================================================
-    // ❌ LISTE SAG VIDE
-    // =====================================================
-    @Test
-    void should_fail_when_sag_list_is_empty() {
-        contextRunner
-                .withPropertyValues(
-                        "swift.partner=SABR-KAL",
-                        "swift.requestSignatureDN=dn-sign",
-                        "swift.requestVerifySignatureDN=dn-verify",
-                        "swift.key=secret",
-                        "swift.attemptNumber=3",
-                        "swift.backOff=1000"
-                        // ⚠️ aucune sagList
-                )
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .isInstanceOf(BindValidationException.class)
-                            .hasMessageContaining("sagList");
-                });
-    }
-
-    // =====================================================
-    // ❌ SAG INCOMPLET (hostname manquant)
-    // =====================================================
-    @Test
-    void should_fail_when_sag_is_invalid() {
-        contextRunner
-                .withPropertyValues(
-                        "swift.partner=SABR-KAL",
-                        "swift.requestSignatureDN=dn-sign",
-                        "swift.requestVerifySignatureDN=dn-verify",
-                        "swift.key=secret",
-                        "swift.attemptNumber=3",
-                        "swift.backOff=1000",
-
-                        "swift.sagList[0].port=58002",
-                        "swift.sagList[0].certPath=/tmp/sag1.crt",
-                        "swift.sagList[0].dn=cn=SAG1"
-                        // ❌ hostname manquant
-                )
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .isInstanceOf(BindValidationException.class)
-                            .hasMessageContaining("hostname");
-                });
-    }
-
-    // =====================================================
-    // ❌ attemptNumber invalide
-    // =====================================================
-    @Test
-    void should_fail_when_attempt_number_is_invalid() {
-        contextRunner
-                .withPropertyValues(
-                        "swift.partner=SABR-KAL",
-                        "swift.requestSignatureDN=dn-sign",
-                        "swift.requestVerifySignatureDN=dn-verify",
-                        "swift.key=secret",
-                        "swift.attemptNumber=0", // ❌ invalide
-                        "swift.backOff=1000",
-
-                        "swift.sagList[0].hostname=10.0.0.1",
-                        "swift.sagList[0].port=58002",
-                        "swift.sagList[0].certPath=/tmp/sag1.crt",
-                        "swift.sagList[0].dn=cn=SAG1"
-                )
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .isInstanceOf(BindValidationException.class)
-                            .hasMessageContaining("attemptNumber");
-                });
-    }
-
-    // =====================================================
-    // CONFIG TEST
-    // =====================================================
-    @EnableConfigurationProperties(SwiftConfiguration.class)
-    static class TestConfig {
-    }
-}
+Voici une version propre, fluide et professionnelle de ton compte rendu 👇
 
 
 ---
 
-3️⃣ Ce que ce test garantit (important)
+Objet : Compte rendu – Semaine en autonomie
 
-✔ Impossible de démarrer si :
+Bonjour Abdel, bonjour Jérôme,
 
-sagList absente
+Suite à votre absence cette semaine, je suis resté en autonomie sur les différents sujets. Voici un point d’avancement :
 
-sagList vide
+1. Problème de format du message initial (flux SE → SABR)
+J’ai réalisé plusieurs tests ainsi que des adaptations. Les résultats ont été concluants avec une version snapshot.
 
-SagEndpoint incomplet
+2. Livraison du ticket 11xx
+À la demande de Badis, le ticket 11xx a été livré.
 
-retry mal configuré
+3. Retours SABR Proxy
+Nous avons eu quelques retours côté SABR Proxy, sans impact majeur. Les tests ont été effectués sur différents scénarios et sont validés.
+
+4. Modifications techniques – SABR Proxy
+
+Une modification a été apportée pour utiliser une URL à la place de l’adresse IP pour les AGIs.
+
+Une pull request a été créée sur SABR Proxy.
+
+Une réunion a eu lieu concernant le paramètre verifyHostName, qui a été validé par l’architecte.
+Marius avait exprimé des réserves, mais le fait que ce paramètre existe déjà a permis de lever les doutes.
 
 
-✔ La validation est testée sans lancer l’application complète
+5. Analyse du ticket 11xx
+J’ai poursuivi les investigations, mais je ne parviens pas encore à reproduire le problème en local.
+Les tests avec Latamene sont assez longs à exécuter, car ils nécessitent de basculer entre plusieurs environnements.
 
-✔ Les erreurs sont lisibles et maintenables
+6. Intervention urgente – GDR
+J’ai été sollicité par Raphaël pour traiter en urgence un ticket GDR lié à des fichiers inexistants.
+
+7. XSD manquants
+À ce stade, je n’ai pas encore réussi à localiser les nouveaux fichiers XSD.
 
 
 ---
 
-4️⃣ Résumé rapide
+N’hésitez pas si vous souhaitez que je priorise certains points à votre retour.
 
-Cas	Résultat
-
-config valide	✅ OK
-sagList vide	❌ KO
-SAG incomplet	❌ KO
-attemptNumber = 0	❌ KO
-
+Bonne journée,
+Jamal
 
 
 ---
 
-Si tu veux, au prochain message je peux te proposer un test d’intégration complet (avec @SpringBootTest) qui vérifie que SagConnectionService ne démarre jamais avec une mauvaise config.
+Si tu veux, je peux aussi te faire une version plus “impact / management” (avec risques + next steps) ou une version ultra courte type Teams 👍
