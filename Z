@@ -1,0 +1,150 @@
+Oui, dans ce cas il ne faut pas passer ton Observable<string[]> directement à une méthode qui attend un string[].
+
+Le plus propre est de combiner la saisie avec l’observable des options :
+
+filteredTypes$ = combineLatest([
+  this.typeControl.valueChanges.pipe(startWith('')),
+  this.types$
+]).pipe(
+  map(([value, types]) => this.filterOptions(value ?? '', types))
+);
+
+Même principe pour les autres :
+
+filteredOrigins$ = combineLatest([
+  this.originControl.valueChanges.pipe(startWith('')),
+  this.origins$
+]).pipe(
+  map(([value, origins]) => this.filterOptions(value ?? '', origins))
+);
+
+filteredStatuses$ = combineLatest([
+  this.statusControl.valueChanges.pipe(startWith('')),
+  this.statuses$
+]).pipe(
+  map(([value, statuses]) => this.filterOptions(value ?? '', statuses))
+);
+
+Avec :
+
+private filterOptions(value: string, options: string[]): string[] {
+  const filterValue = value.toLowerCase().trim();
+
+  return options.filter(option =>
+    option.toLowerCase().includes(filterValue)
+  );
+}
+
+Imports :
+
+import { combineLatest, Observable } from 'rxjs';
+import { map, startWith } from 'rxjs/operators';
+
+Et dans le HTML :
+
+<mat-option
+  *ngFor="let type of filteredTypes$ | async"
+  [value]="type">
+  {{ type }}
+</mat-option>
+
+Donc tu gardes bien :
+
+types$: Observable<string[]>;
+
+Tu ne fais pas :
+
+this.types$.filter(...)
+
+Parce que filter() ici doit être appliqué au tableau émis par l’observable, pas à l’observable lui-même.
+
+
+
+
+
+11111
+
+
+Tes trois valueChanges sont bien séparés. Les erreurs viennent surtout de ta méthode _filter() et du type de tes listes.
+
+On voit notamment :
+
+Property 'options' does not exist on type 'FilterComponent'
+
+toLowerCase() appelé sur un Observable
+
+une confusion entre Observable<string[]> et string[]
+
+
+Supprime les anciennes versions de _filter() et garde uniquement celle-ci :
+
+private _filter(value: string, options: string[]): string[] {
+  const filterValue = value.toLowerCase().trim();
+
+  return options.filter(option =>
+    option.toLowerCase().includes(filterValue)
+  );
+}
+
+Tes listes doivent être de vrais tableaux :
+
+types: string[] = [];
+origins: string[] = [];
+statuses: string[] = [];
+
+filteredTypes!: Observable<string[]>;
+filteredOrigins!: Observable<string[]>;
+filteredStatuses!: Observable<string[]>;
+
+Puis :
+
+this.filteredTypes = this.typeControl.valueChanges.pipe(
+  startWith(''),
+  map(value => this._filter(value ?? '', this.types))
+);
+
+this.filteredOrigins = this.originControl.valueChanges.pipe(
+  startWith(''),
+  map(value => this._filter(value ?? '', this.origins))
+);
+
+this.filteredStatuses = this.statusControl.valueChanges.pipe(
+  startWith(''),
+  map(value => this._filter(value ?? '', this.statuses))
+);
+
+Le point important est que ceci est incorrect :
+
+return this.options.filter(...);
+
+Car tu n’as pas de propriété options. Il faut utiliser le paramètre reçu :
+
+return options.filter(...);
+
+Et ceci est également incorrect :
+
+return options.pipe(...);
+
+pipe() s’utilise sur un Observable, tandis que filter() s’utilise ici sur un tableau.
+
+Si actuellement tes variables sont déclarées ainsi :
+
+types: Observable<string[]>;
+origins: Observable<string[]>;
+statuses: Observable<string[]>;
+
+alors il faut d’abord récupérer leur contenu et le stocker dans des tableaux :
+
+this.referentialService.getTypes().subscribe(values => {
+  this.types = values;
+});
+
+this.referentialService.getOrigins().subscribe(values => {
+  this.origins = values;
+});
+
+this.referentialService.getStatuses().subscribe(values => {
+  this.statuses = values;
+});
+
+Donc la correction immédiate est : types, origins et statuses doivent être des string[], et _filter() doit recevoir le tableau en deuxième paramètre.
