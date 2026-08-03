@@ -1,0 +1,617 @@
+Voici précisément dans quel fichier placer chaque modification, en restant proche de votre architecture actuelle.
+
+1. ProcessingService.java
+
+C’est dans ce fichier que se trouve le correctif principal, car actuellement processMsgToAgis() recrée une ConnectionFactory et un JmsTemplate à chaque message.
+
+A. Ajouter les imports
+
+En haut de ProcessingService.java :
+
+import com.atomikos.jms.AtomikosConnectionFactoryBean;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import org.springframework.jms.core.JmsTemplate;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+
+Selon votre version de Java/Spring, les annotations peuvent être dans javax.annotation au lieu de jakarta.annotation :
+
+import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
+
+Gardez le même package que celui déjà utilisé par votre projet.
+
+⸻
+
+B. Supprimer les anciens attributs du pool AGI
+
+Dans ProcessingService.java, vous avez actuellement quelque chose qui ressemble à :
+
+private Ring<ActiveMQConfiguration> ring;
+private GenericObjectPool<
+        Tuple2<ConnectionFactory, ActiveMQConfiguration>> pool;
+
+Si vous adoptez la solution un pool Atomikos partagé par ActiveMQ, ces deux attributs ne sont plus nécessaires pour l’envoi vers les AGI.
+
+Vous pouvez les supprimer ainsi que les imports liés à :
+
+GenericObjectPool
+GenericObjectPoolConfig
+BasePooledObjectFactory
+DefaultPooledObject
+PooledObject
+Tuple2
+Ring
+
+Seulement s’ils ne sont plus utilisés ailleurs dans ce fichier.
+
+⸻
+
+C. Ajouter les maps dans ProcessingService.java
+
+Placez ces attributs avec les autres attributs de la classe, par exemple juste après :
+
+private JmsTemplate senderSabr;
+
+Ajoutez :
+
+private final Map<String, JmsTemplate> sendersByActiveMq =
+        new ConcurrentHashMap<>();
+private final Map<String, AtomikosConnectionFactoryBean> factoriesByActiveMq =
+        new ConcurrentHashMap<>();
+
+Vous aurez donc quelque chose comme :
+
+public class ProcessingService {
+    @Autowired
+    private ActiveMQConfiguration sabrAmqConfiguration;
+    @Autowired
+    private AgiActiveMqConfiguration agiAmqConfiguration;
+    @Autowired
+    private JmsTemplateService jmsTemplateService;
+    private JmsTemplate senderSabr;
+    private final Map<String, JmsTemplate> sendersByActiveMq =
+            new ConcurrentHashMap<>();
+    private final Map<String, AtomikosConnectionFactoryBean> factoriesByActiveMq =
+            new ConcurrentHashMap<>();
+    // ...
+}
+
+Le nom AgiActiveMqConfiguration est un exemple. Gardez le vrai type actuellement utilisé dans votre projet pour récupérer la liste des ActiveMQ AGI.
+
+⸻
+
+D. Modifier la méthode init() dans ProcessingService.java
+
+Votre méthode actuelle contient notamment :
+
+@PostConstruct
+private void init() throws Exception {
+    ring = new Ring<>(agiAmqConfiguration.getConfigurations());
+    GenericObjectPoolConfig<...> config =
+            new GenericObjectPoolConfig<>();
+    // configuration du GenericObjectPool
+    pool = new GenericObjectPool<>(new ObjectFactory(ring), config);
+    pool.preparePool();
+    final ConnectionFactory connectionFactory =
+            jmsTemplateService.amqConnectionFactory(
+                    sabrAmqConfiguration
+            );
+    senderSabr = jmsTemplateService.build(connectionFactory);
+}
+
+Remplacez-la par :
+
+@PostConstruct
+private void init() {
+    initializeAgiSenders();
+    initializeSabrSender();
+}
+
+Puis ajoutez ces deux méthodes dans le même fichier :
+
+private void initializeAgiSenders() {
+    for (ActiveMQConfiguration configuration
+            : agiAmqConfiguration.getConfigurations()) {
+        String key = activeMqKey(configuration);
+        if (sendersByActiveMq.containsKey(key)) {
+            throw new IllegalStateException(
+                    "Configuration ActiveMQ AGI dupliquée : " + key
+            );
+        }
+        ConnectionFactory createdFactory =
+                jmsTemplateService.amqConnectionFactory(configuration);
+        if (!(createdFactory
+                instanceof AtomikosConnectionFactoryBean atomikosFactory)) {
+            throw new IllegalStateException(
+                    "Une AtomikosConnectionFactoryBean était attendue pour "
+                            + key
+            );
+        }
+        JmsTemplate sender =
+                jmsTemplateService.build(atomikosFactory);
+        if (sender == null) {
+            closeQuietly(atomikosFactory, key);
+            throw new IllegalStateException(
+                    "Impossible de créer le JmsTemplate pour " + key
+            );
+        }
+        factoriesByActiveMq.put(key, atomikosFactory);
+        sendersByActiveMq.put(key, sender);
+    }
+}
+
+Puis :
+
+private void initializeSabrSender() {
+    ConnectionFactory connectionFactory =
+            jmsTemplateService.amqConnectionFactory(
+                    sabrAmqConfiguration
+            );
+    if (connectionFactory == null) {
+        throw new IllegalStateException(
+                "Impossible de créer la ConnectionFactory SABR"
+        );
+    }
+    senderSabr = jmsTemplateService.build(connectionFactory);
+    if (senderSabr == null) {
+        throw new IllegalStateException(
+                "Impossible de créer le JmsTemplate SABR"
+        );
+    }
+}
+
+Point à adapter
+
+Sur vos captures, la liste semble provenir de :
+
+agiAmqConfiguration.getConfigurations()
+
+Gardez cette méthode si elle existe réellement. Sinon, remplacez-la par la méthode utilisée actuellement dans votre projet pour récupérer la liste des brokers AGI.
+
+⸻
+
+E. Ajouter la méthode de clé dans ProcessingService.java
+
+Ajoutez cette méthode privée dans le même fichier :
+
+private String activeMqKey(
+        ActiveMQConfiguration configuration) {
+    Objects.requireNonNull(
+            configuration,
+            "La configuration ActiveMQ ne peut pas être nulle"
+    );
+    String name = configuration.getName();
+    String url = configuration.getUrl();
+    if (name == null || name.isBlank()) {
+        throw new IllegalArgumentException(
+                "Le nom de la configuration ActiveMQ est obligatoire"
+        );
+    }
+    if (url == null || url.isBlank()) {
+        throw new IllegalArgumentException(
+                "L'URL ActiveMQ est obligatoire pour " + name
+        );
+    }
+    return name + "|" + url;
+}
+
+Cette clé permet de distinguer deux brokers qui auraient éventuellement le même nom ou la même URL.
+
+⸻
+
+F. Modifier processMsgToAgis() dans ProcessingService.java
+
+Vous avez actuellement quelque chose comme :
+
+public void processMsgToAgis(
+        Message message,
+        ActiveMQConfiguration activeMqServer) {
+    final ConnectionFactory connectionFactory =
+            jmsTemplateService.amqConnectionFactory(activeMqServer);
+    if (Objects.isNull(connectionFactory)) {
+        throw new IllegalStateException(
+                "[Error] When borrowing connection from pool..."
+        );
+    }
+    final JmsTemplate sender =
+            jmsTemplateService.build(connectionFactory);
+    if (Objects.isNull(sender)) {
+        throw new IllegalStateException(
+                "[Error] When creating JMS sender..."
+        );
+    }
+    String queue = activeMqServer.getQueueIn();
+    Try.of(() -> send(sender, queue, message))
+            // ...
+}
+
+Supprimez entièrement cette partie :
+
+final ConnectionFactory connectionFactory =
+        jmsTemplateService.amqConnectionFactory(activeMqServer);
+final JmsTemplate sender =
+        jmsTemplateService.build(connectionFactory);
+
+Et remplacez la méthode par :
+
+public void processMsgToAgis(
+        Message message,
+        ActiveMQConfiguration activeMqServer) {
+    String key = activeMqKey(activeMqServer);
+    JmsTemplate sender = sendersByActiveMq.get(key);
+    if (sender == null) {
+        throw new IllegalStateException(
+                "Aucun sender JMS configuré pour l'ActiveMQ : " + key
+        );
+    }
+    String queue = activeMqServer.getQueueIn();
+    Try.of(() -> send(sender, queue, message))
+            .onFailure(error ->
+                    EvtFoncLogger.PRX0004.logEvtFonc(queue)
+            )
+            .getOrElseThrow(error ->
+                    new IllegalStateException(
+                            "Erreur lors de l'envoi vers l'ActiveMQ "
+                                    + key,
+                            error
+                    )
+            );
+}
+
+Selon la version de Vavr utilisée dans votre projet, la signature de getOrElseThrow() peut être différente. Vous pouvez aussi conserver exactement votre gestion d’erreur actuelle et uniquement changer la récupération du sender.
+
+Le changement réellement indispensable est :
+
+JmsTemplate sender =
+        sendersByActiveMq.get(activeMqKey(activeMqServer));
+
+⸻
+
+G. Fermer les factories dans ProcessingService.java
+
+Ajoutez une méthode @PreDestroy :
+
+@PreDestroy
+private void destroy() {
+    sendersByActiveMq.clear();
+    factoriesByActiveMq.forEach((key, factory) ->
+            closeQuietly(factory, key)
+    );
+    factoriesByActiveMq.clear();
+}
+
+Puis ajoutez :
+
+private void closeQuietly(
+        AtomikosConnectionFactoryBean factory,
+        String key) {
+    try {
+        factory.close();
+    } catch (Exception exception) {
+        log.error(
+                "Erreur pendant la fermeture de la ConnectionFactory {}",
+                key,
+                exception
+        );
+    }
+}
+
+Si votre classe ne possède pas encore de logger, ajoutez par exemple Lombok :
+
+@Slf4j
+public class ProcessingService {
+
+avec :
+
+import lombok.extern.slf4j.Slf4j;
+
+Ou utilisez le mécanisme de logs déjà présent dans votre projet.
+
+⸻
+
+2. JmsTemplateService.java
+
+Dans ce fichier, vous n’avez pas besoin de refaire toute l’architecture. Sa responsabilité reste :
+
+* créer une AtomikosConnectionFactoryBean ;
+* créer un JmsTemplate à partir de cette factory.
+
+A. Conserver build()
+
+La méthode peut rester comme elle est :
+
+public JmsTemplate build(
+        ConnectionFactory connectionFactory) {
+    JmsTemplate template = new JmsTemplate();
+    template.setConnectionFactory(connectionFactory);
+    template.setReceiveTimeout(1000);
+    template.setSessionAcknowledgeMode(
+            Session.AUTO_ACKNOWLEDGE
+    );
+    template.setSessionTransacted(true);
+    return template;
+}
+
+Elle sera désormais appelée une fois par ActiveMQ au démarrage, et non plus à chaque transaction.
+
+⸻
+
+B. Conserver amqConnectionFactory(), mais sécuriser son identifiant
+
+Vous avez actuellement approximativement :
+
+public ConnectionFactory amqConnectionFactory(
+        ActiveMQConfiguration activeMqConfiguration) {
+    if (Objects.isNull(activeMqConfiguration)) {
+        return null;
+    }
+    final AtomikosConnectionFactoryBean atomikosConnectionFactory =
+            new AtomikosConnectionFactoryBean();
+    atomikosConnectionFactory.setPoolSize(10);
+    atomikosConnectionFactory.setMaxPoolSize(200);
+    atomikosConnectionFactory.setUniqueResourceName(
+            "XA-" + UUID.randomUUID()
+    );
+    atomikosConnectionFactory.setLocalTransactionMode(false);
+    atomikosConnectionFactory.setXaConnectionFactory(
+            getConnectionFactory(activeMqConfiguration)
+    );
+    return atomikosConnectionFactory;
+}
+
+Évitez un nom entièrement aléatoire si la factory doit représenter un broker précis. Utilisez une valeur stable mais unique dans l’instance de l’application :
+
+public ConnectionFactory amqConnectionFactory(
+        ActiveMQConfiguration activeMqConfiguration) {
+    Objects.requireNonNull(
+            activeMqConfiguration,
+            "La configuration ActiveMQ est obligatoire"
+    );
+    AtomikosConnectionFactoryBean atomikosConnectionFactory =
+            new AtomikosConnectionFactoryBean();
+    atomikosConnectionFactory.setMinPoolSize(1);
+    atomikosConnectionFactory.setMaxPoolSize(10);
+    atomikosConnectionFactory.setUniqueResourceName(
+            buildResourceName(activeMqConfiguration)
+    );
+    atomikosConnectionFactory.setLocalTransactionMode(false);
+    atomikosConnectionFactory.setXaConnectionFactory(
+            getConnectionFactory(activeMqConfiguration)
+    );
+    return atomikosConnectionFactory;
+}
+
+Ajoutez dans JmsTemplateService.java :
+
+private String buildResourceName(
+        ActiveMQConfiguration configuration) {
+    String rawName =
+            configuration.getName()
+                    + "-"
+                    + Integer.toHexString(
+                            configuration.getUrl().hashCode()
+                    );
+    return "XA-AGI-" + rawName;
+}
+
+Attention : Atomikos exige que le uniqueResourceName soit unique parmi les ressources enregistrées dans la même JVM.
+
+Si plusieurs instances de la même configuration peuvent être recréées au cours de la vie du processus, vous pouvez garder un suffixe unique :
+
+return "XA-AGI-"
+        + rawName
+        + "-"
+        + UUID.randomUUID();
+
+Mais avec le nouveau correctif, cette méthode ne sera normalement appelée qu’une seule fois par ActiveMQ au démarrage.
+
+⸻
+
+C. Corriger le dimensionnement Atomikos
+
+Sur votre capture, il semble y avoir :
+
+setPoolSize(10);
+setMaxPoolSize(200);
+
+Un maximum de 200 par ActiveMQ peut être très élevé.
+
+Commencez plutôt par :
+
+atomikosConnectionFactory.setMinPoolSize(1);
+atomikosConnectionFactory.setMaxPoolSize(10);
+
+Ou, selon l’API disponible dans votre version Atomikos :
+
+atomikosConnectionFactory.setPoolSize(10);
+
+Il faut vérifier quelles méthodes sont réellement disponibles dans votre dépendance.
+
+L’objectif est :
+
+nombre d’ActiveMQ AGI × 10 connexions maximum
+
+et non :
+
+nombre de messages × nouveau pool × plusieurs connexions
+
+⸻
+
+3. ActiveMQConfiguration.java
+
+Votre capture montre déjà :
+
+private String name;
+private String url;
+private String username;
+private String password;
+private Boolean sslEnabled;
+private SSL keystore;
+private SSL truststore;
+private String queueIn;
+private String queueOut;
+private String queueNotif;
+private String queueNrdata;
+
+Aucun changement obligatoire n’est nécessaire dans ce fichier.
+
+Grâce à Lombok @Data, vous disposez déjà de :
+
+getName()
+getUrl()
+getQueueIn()
+
+qui sont utilisés par :
+
+activeMqKey(configuration)
+
+Vous pouvez éventuellement ajouter une méthode de clé dans cette classe :
+
+public String getTechnicalKey() {
+    return name + "|" + url;
+}
+
+Mais je préfère éviter de mettre une logique de gestion des pools dans une classe de configuration. Gardez plutôt activeMqKey() dans ProcessingService.java.
+
+⸻
+
+4. Classe contenant la liste des ActiveMQ AGI
+
+Vous avez probablement une classe différente de ActiveMQConfiguration, par exemple :
+
+AgiAmqConfiguration
+
+ou :
+
+AgiMQConfiguration
+
+avec une méthode :
+
+getConfigurations()
+
+Ce fichier doit simplement continuer à exposer la liste :
+
+@Configuration
+@ConfigurationProperties(prefix = "agi.amq")
+@Data
+public class AgiAmqConfiguration {
+    private List<ActiveMQConfiguration> configurations =
+            new ArrayList<>();
+}
+
+Aucun pool ne doit être créé dans cette classe. Elle ne fait que charger les configurations depuis le YAML.
+
+⸻
+
+5. application-run.yml ou application.yml
+
+Aucune modification structurelle n’est nécessaire si vous avez déjà une liste similaire à :
+
+agi:
+  amq:
+    configurations:
+      - name: agi-01
+        url: tcp://broker-agi-01:61616
+        username: user
+        password: password
+        ssl-enabled: false
+        queue-in: AGI.IN
+      - name: agi-02
+        url: tcp://broker-agi-02:61616
+        username: user
+        password: password
+        ssl-enabled: false
+        queue-in: AGI.IN
+
+Il faut seulement vérifier que chaque entrée possède un couple unique :
+
+name + url
+
+Ne mettez pas deux configurations identiques, sinon l’initialisation doit échouer avec :
+
+Configuration ActiveMQ AGI dupliquée
+
+⸻
+
+Structure finale
+
+ProcessingService.java
+
+Responsabilités :
+
+- récupérer la liste des ActiveMQ
+- créer une factory Atomikos par ActiveMQ au démarrage
+- créer un JmsTemplate par ActiveMQ
+- stocker les senders dans une Map
+- sélectionner le bon sender dans processMsgToAgis()
+- fermer les factories à l’arrêt
+
+JmsTemplateService.java
+
+Responsabilités :
+
+- construire AtomikosConnectionFactoryBean
+- configurer son pool interne
+- construire JmsTemplate
+- construire la XAConnectionFactory ActiveMQ SSL ou non SSL
+
+ActiveMQConfiguration.java
+
+Responsabilité :
+
+- contenir les paramètres d’un broker ActiveMQ
+
+Classe de liste AGI
+
+Responsabilité :
+
+- charger la liste des configurations ActiveMQ depuis le YAML
+
+⸻
+
+Résumé des suppressions dans ProcessingService.java
+
+Supprimez :
+
+private Ring<ActiveMQConfiguration> ring;
+private GenericObjectPool<...> pool;
+
+Supprimez de init() :
+
+ring = new Ring<>(...);
+GenericObjectPoolConfig...
+new GenericObjectPool<>(...);
+pool.preparePool();
+
+Supprimez la classe interne :
+
+private class ObjectFactory
+        extends BasePooledObjectFactory<...> {
+    // ...
+}
+
+Supprimez de processMsgToAgis() :
+
+jmsTemplateService.amqConnectionFactory(activeMqServer);
+jmsTemplateService.build(connectionFactory);
+
+Et remplacez par :
+
+JmsTemplate sender =
+        sendersByActiveMq.get(activeMqKey(activeMqServer));
+
+Le résultat final est bien :
+
+ActiveMQ AGI 1
+→ une factory Atomikos
+→ un pool interne
+→ un JmsTemplate partagé
+ActiveMQ AGI 2
+→ une factory Atomikos
+→ un pool interne
+→ un JmsTemplate partagé
+
+Le routage reste inchangé : activeMqServer détermine toujours l’AGI destinataire, mais aucune nouvelle factory n’est créée pendant le traitement d’une transaction.
