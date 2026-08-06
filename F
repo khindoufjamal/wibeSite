@@ -1,0 +1,595 @@
+Oui, la stratégie maxReconnectAttempts=0 + invalidation/recréation de la factory défaillante peut couvrir la récupération après redémarrage d’un AGI. Mais elle ne suffit pas à elle seule pour garantir l’envoi en QD lorsque les deux AGI sont indisponibles.
+
+Il faut traiter séparément :
+
+1. le cycle de vie des connexions ActiveMQ ;
+2. la transaction utilisée par les tentatives AGI et l’envoi en QD.
+
+Architecture cible
+
+Un AGI fonctionne
+→ sa factory Atomikos est réutilisée
+Un AGI tombe
+→ l’envoi échoue rapidement
+→ sa factory est retirée et fermée
+L’AGI reste arrêté
+→ une tentative ultérieure recrée une factory
+→ l’envoi échoue et la factory est de nouveau invalidée
+L’AGI redémarre
+→ la tentative suivante crée une nouvelle factory
+→ la connexion réussit
+→ la nouvelle factory est conservée
+Les deux AGI sont arrêtés
+→ toutes les tentatives échouent
+→ RetryTemplate atteint le RecoveryCallback
+→ envoi dans la QD
+→ retour normal
+→ commit de la transaction de réception
+
+⸻
+
+1. Nouveau fichier ActiveMqSenderHolder.java
+
+Il vaut mieux regrouper la factory et le JmsTemplate dans un seul objet. Cela évite d’avoir deux maps désynchronisées.
+
+package votre.package;
+import com.atomikos.jms.AtomikosConnectionFactoryBean;
+import org.springframework.jms.core.JmsTemplate;
+public record ActiveMqSenderHolder(
+        AtomikosConnectionFactoryBean connectionFactory,
+        JmsTemplate jmsTemplate) {
+}
+
+⸻
+
+2. Modifications dans ProcessingService.java
+
+A. Remplacer les deux maps actuelles
+
+Supprime :
+
+private final Map<String, JmsTemplate> sendersByActiveMq =
+        new ConcurrentHashMap<>();
+private final Map<String, AtomikosConnectionFactoryBean> factoriesByActiveMq =
+        new ConcurrentHashMap<>();
+
+Remplace par :
+
+private final ConcurrentMap<String, ActiveMqSenderHolder> sendersByActiveMq =
+        new ConcurrentHashMap<>();
+private final ConcurrentMap<String, Object> senderLocks =
+        new ConcurrentHashMap<>();
+
+Imports :
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+
+⸻
+
+B. Créer un holder
+
+Ajoute cette méthode :
+
+private ActiveMqSenderHolder createSenderHolder(
+        ActiveMQConfiguration configuration) {
+    String key = activeMqKey(configuration);
+    ConnectionFactory createdFactory =
+            jmsTemplateService.amqConnectionFactory(configuration);
+    if (!(createdFactory
+            instanceof AtomikosConnectionFactoryBean atomikosFactory)) {
+        throw new IllegalStateException(
+                "AtomikosConnectionFactoryBean attendue pour " + key
+        );
+    }
+    try {
+        JmsTemplate jmsTemplate =
+                jmsTemplateService.build(atomikosFactory);
+        if (jmsTemplate == null) {
+            throw new IllegalStateException(
+                    "Impossible de créer le JmsTemplate pour " + key
+            );
+        }
+        return new ActiveMqSenderHolder(
+                atomikosFactory,
+                jmsTemplate
+        );
+    } catch (RuntimeException exception) {
+        closeQuietly(key, atomikosFactory);
+        throw exception;
+    }
+}
+
+Cette méthode crée :
+
+une factory Atomikos
++
+son pool interne
++
+un JmsTemplate
+
+⸻
+
+C. Initialiser les AGI au démarrage
+
+Dans initializeAgiSenders() :
+
+private void initializeAgiSenders() {
+    for (ActiveMQConfiguration configuration
+            : agiAmqConfiguration.getConfigurations()) {
+        String key = activeMqKey(configuration);
+        ActiveMqSenderHolder holder =
+                createSenderHolder(configuration);
+        ActiveMqSenderHolder previous =
+                sendersByActiveMq.putIfAbsent(key, holder);
+        if (previous != null) {
+            closeQuietly(key, holder.connectionFactory());
+            throw new IllegalStateException(
+                    "Configuration ActiveMQ dupliquée : " + key
+            );
+        }
+    }
+}
+
+Cette initialisation peut être conservée si les brokers sont normalement disponibles au démarrage.
+
+Attention : si la création Atomikos tente immédiatement une connexion et échoue lorsque le broker est arrêté, le démarrage du proxy pourrait échouer. Dans ce cas, il faudra passer à une initialisation entièrement paresseuse : ne rien créer au démarrage et laisser getOrCreateSender() créer la factory au premier envoi.
+
+⸻
+
+D. Récupérer ou recréer le sender
+
+Ajoute :
+
+private ActiveMqSenderHolder getOrCreateSender(
+        ActiveMQConfiguration configuration) {
+    String key = activeMqKey(configuration);
+    ActiveMqSenderHolder existing =
+            sendersByActiveMq.get(key);
+    if (existing != null) {
+        return existing;
+    }
+    Object lock = senderLocks.computeIfAbsent(
+            key,
+            ignored -> new Object()
+    );
+    synchronized (lock) {
+        existing = sendersByActiveMq.get(key);
+        if (existing != null) {
+            return existing;
+        }
+        log.info(
+                "Création d'une nouvelle ConnectionFactory pour {}",
+                key
+        );
+        ActiveMqSenderHolder created =
+                createSenderHolder(configuration);
+        sendersByActiveMq.put(key, created);
+        return created;
+    }
+}
+
+Le double contrôle est important : deux threads ne doivent pas créer deux pools Atomikos pour le même AGI.
+
+⸻
+
+E. Invalider uniquement la factory défaillante
+
+Ajoute :
+
+private void invalidateSender(
+        String key,
+        ActiveMqSenderHolder failedHolder) {
+    boolean removed =
+            sendersByActiveMq.remove(key, failedHolder);
+    if (!removed) {
+        /*
+         * Le holder a déjà été remplacé par un autre thread.
+         * On ne doit surtout pas fermer la nouvelle factory.
+         */
+        return;
+    }
+    log.warn(
+            "Invalidation de la ConnectionFactory ActiveMQ {}",
+            key
+    );
+    closeQuietly(
+            key,
+            failedHolder.connectionFactory()
+    );
+}
+
+L’instruction suivante est essentielle :
+
+sendersByActiveMq.remove(key, failedHolder);
+
+Elle ne supprime le holder que s’il est toujours celui qui a réellement échoué.
+
+⸻
+
+F. Détecter les erreurs de connexion
+
+Ajoute :
+
+private boolean isConnectionFailure(Throwable throwable) {
+    Throwable current = throwable;
+    while (current != null) {
+        if (current
+                instanceof org.apache.activemq.ConnectionFailedException
+                || current instanceof java.net.ConnectException
+                || current instanceof java.net.SocketException
+                || current instanceof java.io.EOFException) {
+            return true;
+        }
+        current = current.getCause();
+    }
+    return false;
+}
+
+Ne considère pas toutes les JMSException comme des erreurs de connexion. Une erreur de destination, de message ou de transaction ne doit pas provoquer la destruction du pool.
+
+Après les tests, complète la liste avec les vraies causes observées dans les logs.
+
+⸻
+
+G. Modifier processMsgToAgis()
+
+public void processMsgToAgis(
+        Message message,
+        ActiveMQConfiguration activeMqServer) {
+    String key = activeMqKey(activeMqServer);
+    String queue = activeMqServer.getQueueIn();
+    ActiveMqSenderHolder holder =
+            getOrCreateSender(activeMqServer);
+    try {
+        send(
+                holder.jmsTemplate(),
+                queue,
+                message
+        );
+    } catch (Exception exception) {
+        if (isConnectionFailure(exception)) {
+            invalidateSender(key, holder);
+        }
+        EvtFoncLogger.PRX0004.logEvtFonc(queue);
+        throw new IllegalStateException(
+                "Erreur lors de l'envoi vers l'ActiveMQ " + key,
+                exception
+        );
+    }
+}
+
+Ne recrée pas immédiatement la factory dans le catch.
+
+Le comportement doit être :
+
+échec
+→ suppression et fermeture
+→ exception remontée
+→ tentative vers l’AGI suivant
+
+La recréation se fera lors de la prochaine tentative vers ce même AGI.
+
+⸻
+
+H. Fermeture à l’arrêt
+
+Dans ProcessingService.java :
+
+@PreDestroy
+private void destroy() {
+    sendersByActiveMq.forEach((key, holder) ->
+            closeQuietly(
+                    key,
+                    holder.connectionFactory()
+            )
+    );
+    sendersByActiveMq.clear();
+    senderLocks.clear();
+}
+
+Et :
+
+private void closeQuietly(
+        String key,
+        AtomikosConnectionFactoryBean factory) {
+    if (factory == null) {
+        return;
+    }
+    try {
+        factory.close();
+    } catch (Exception exception) {
+        log.warn(
+                "Erreur lors de la fermeture de la factory {}",
+                key,
+                exception
+        );
+    }
+}
+
+⸻
+
+3. JmsTemplateService.java
+
+La méthode continue de créer une factory Atomikos :
+
+public ConnectionFactory amqConnectionFactory(
+        ActiveMQConfiguration configuration) {
+    AtomikosConnectionFactoryBean factory =
+            new AtomikosConnectionFactoryBean();
+    factory.setPoolSize(3);
+    factory.setMaxPoolSize(10);
+    factory.setUniqueResourceName(
+            "XA-"
+                    + configuration.getName()
+                    + "-"
+                    + UUID.randomUUID()
+    );
+    factory.setLocalTransactionMode(false);
+    factory.setXaConnectionFactory(
+            getConnectionFactory(configuration)
+    );
+    return factory;
+}
+
+Le suffixe aléatoire est utile ici : lorsqu’une factory est détruite puis recréée, Atomikos ne doit pas considérer qu’une ressource portant exactement le même identifiant est encore enregistrée.
+
+Conserve dans l’URL :
+
+maxReconnectAttempts=0
+
+Le but est que l’échec remonte rapidement à l’application au lieu de bloquer indéfiniment sur le broker indisponible.
+
+⸻
+
+4. Nouveau fichier AgiAttemptService.java
+
+C’est le point important pour la QD.
+
+Une simple invalidation des factories ne garantit pas que la transaction de réception reste valide. Une tentative XA vers un AGI arrêté peut marquer la transaction courante rollback-only.
+
+Pour éviter qu’un échec AGI condamne la transaction qui devra ensuite envoyer en QD, isole chaque tentative dans une transaction indépendante.
+
+package votre.package;
+import jakarta.jms.Message;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+@Service
+@RequiredArgsConstructor
+public class AgiAttemptService {
+    private final ProcessingService processingService;
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void send(
+            Message message,
+            ActiveMQConfiguration activeMqServer) {
+        processingService.processMsgToAgis(
+                message,
+                activeMqServer
+        );
+    }
+}
+
+Cette classe doit être un bean Spring séparé. Une méthode annotée appelée depuis la même classe ne passerait pas forcément par le proxy transactionnel.
+
+⸻
+
+5. Modifications dans RetryingListener.java
+
+Injecte le nouveau service :
+
+private final AgiAttemptService agiAttemptService;
+
+Dans la boucle, remplace l’appel direct à :
+
+((SabrListener) delegate)
+        .onMessage(message, activeMqServer);
+
+par l’appel au service transactionnel, selon votre architecture. Le plus propre est que le service appelle directement ProcessingService.
+
+Exemple :
+
+agiRetryTemplate.execute(
+        retryContext -> {
+            int attempt =
+                    retryContext.getRetryCount() + 1;
+            for (ActiveMQConfiguration activeMqServer
+                    : agiAmqConfigurationList) {
+                try {
+                    log.info(
+                            "Tentative {} vers AGI {}",
+                            attempt,
+                            activeMqServer.getName()
+                    );
+                    agiAttemptService.send(
+                            message,
+                            activeMqServer
+                    );
+                    log.info(
+                            "Message envoyé vers AGI {}",
+                            activeMqServer.getName()
+                    );
+                    return null;
+                } catch (Exception exception) {
+                    log.warn(
+                            "Échec d'envoi vers AGI {}",
+                            activeMqServer.getName(),
+                            exception
+                    );
+                }
+            }
+            throw new NoAgiAvailableException(
+                    "Aucun AGI disponible"
+            );
+        },
+        retryContext -> {
+            log.error(
+                    "Tous les AGI sont indisponibles après {} tentatives. "
+                            + "Envoi du message {} en QD.",
+                    retryContext.getRetryCount(),
+                    msgId
+            );
+            processingService.sendMsgToDeadQueue(
+                    message,
+                    msgId
+            );
+            /*
+             * Important :
+             * l'envoi QD a réussi, le listener doit revenir normalement.
+             */
+            return null;
+        }
+);
+
+Le RecoveryCallback ne doit pas relancer l’exception après un envoi QD réussi.
+
+⸻
+
+Analyse des scénarios
+
+Scénario 1 — AGI1 et AGI2 actifs
+
+AGI1 actif
+AGI2 actif
+→ récupération du holder AGI choisi
+→ envoi réussi
+→ factory conservée
+
+Résultat attendu : fonctionne.
+
+Le nombre de connexions reste stable puisque la factory est réutilisée.
+
+⸻
+
+Scénario 2 — AGI1 arrêté, AGI2 actif
+
+tentative AGI1
+→ échec rapide grâce à maxReconnectAttempts=0
+→ invalidation de la factory AGI1
+→ exception capturée par RetryingListener
+→ tentative AGI2
+→ réussite
+
+Résultat attendu : fonctionne.
+
+Il faut vérifier que l’échec AGI1 ne bloque pas plusieurs secondes de plus que prévu avec les paramètres timeout et startupMaxReconnectAttempts.
+
+⸻
+
+Scénario 3 — AGI1 redémarre
+
+Après l’échec précédent, le holder AGI1 a été retiré de la map.
+
+nouvelle tentative AGI1
+→ getOrCreateSender()
+→ création d’une nouvelle factory
+→ création d’une nouvelle connexion
+→ AGI1 étant revenu, envoi réussi
+→ holder conservé
+
+Résultat attendu : fonctionne.
+
+C’est précisément le scénario corrigé par la recréation paresseuse.
+
+⸻
+
+Scénario 4 — AGI1 et AGI2 arrêtés
+
+AGI1 échoue
+→ factory AGI1 invalidée
+AGI2 échoue
+→ factory AGI2 invalidée
+RetryTemplate recommence selon sa politique
+→ nouvelles factories créées
+→ nouveaux échecs
+retries épuisés
+→ RecoveryCallback
+→ envoi QD
+→ retour normal
+→ commit de la transaction de réception
+
+Résultat attendu : fonctionne à une condition essentielle : les tentatives AGI ne doivent pas avoir marqué la transaction principale rollback-only.
+
+C’est la raison du AgiAttemptService avec REQUIRES_NEW.
+
+Sans cette isolation, le code de recréation des factories peut fonctionner parfaitement, mais l’envoi QD peut quand même être annulé au commit.
+
+⸻
+
+Scénario 5 — La QD est également indisponible
+
+AGI1 et AGI2 indisponibles
+→ RecoveryCallback
+→ tentative QD
+→ échec QD
+→ exception remontée
+→ transaction de réception rollbackée
+→ message source redélivré
+
+Résultat attendu : rollback, ce qui est correct. Le message ne doit pas être perdu si même la QD est indisponible.
+
+Il ne faut donc pas absorber l’exception de la QD.
+
+⸻
+
+Scénario 6 — Plusieurs threads échouent simultanément sur AGI1
+
+Deux threads peuvent avoir récupéré le même holder avant l’arrêt du broker.
+
+thread A échoue
+→ remove(key, holder) réussit
+→ ferme la factory
+thread B échoue
+→ remove(key, holder) échoue
+→ ne ferme rien
+
+Cela évite une double fermeture ou la suppression accidentelle d’un nouveau holder.
+
+Il existe néanmoins une petite fenêtre où le thread A ferme la factory pendant que le thread B est encore en train de l’utiliser. Le thread B échouera, ce qui est acceptable dans un scénario où le broker est déjà indisponible.
+
+En revanche, évite absolument :
+
+sendersByActiveMq.remove(key);
+
+sans vérifier l’instance.
+
+⸻
+
+Scénario 7 — Broker instable, alternance up/down
+
+À chaque panne :
+
+holder invalidé
+
+À chaque retour :
+
+holder recréé
+
+Cela fonctionnera, mais peut créer beaucoup de factories si le broker alterne rapidement.
+
+Ajoutez au minimum des métriques :
+
+nombre de créations de factory par AGI
+nombre d’invalidations
+nombre d’échecs de connexion
+nombre d’envois réussis après recréation
+
+Si les recréations deviennent trop fréquentes, il faudra envisager un mécanisme de backoff ou un circuit breaker par AGI.
+
+⸻
+
+Point d’architecture à valider
+
+REQUIRES_NEW garantit que les échecs AGI ne condamnent pas la transaction utilisée pour envoyer en QD. En revanche, un envoi réussi vers un AGI est validé dans sa transaction indépendante.
+
+Un cas rare est alors possible :
+
+envoi AGI réussi et commité
+→ erreur ultérieure dans la transaction de réception
+→ message source redélivré
+→ risque de doublon AGI
+
+Si l’atomicité stricte entre la consommation SABR et l’envoi AGI est obligatoire, la solution robuste n’est pas une succession de transactions XA indépendantes, mais un modèle d’outbox/idempotence.
+
+Pour votre correctif immédiat, la solution proposée couvre les scénarios techniques. Mais le choix de REQUIRES_NEW doit être validé avec l’architecte en raison de ce risque de doublon.
