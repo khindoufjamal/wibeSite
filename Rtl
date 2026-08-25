@@ -1,0 +1,55 @@
+Je te conseille de restructurer le début de la documentation pour distinguer clairement les installations via Self Service, l’élévation temporaire des droits administrateur, puis les installations/configurations nécessitant ces droits.
+
+Instructions d’installation de l’environnement de développement
+
+1. Installation des outils disponibles dans Self Service
+
+Ouvrir l’application Self Service – Applications FDJ depuis le poste de travail.
+
+Depuis Self Service, rechercher puis installer les outils suivants :
+
+* IntelliJ IDEA — environnement de développement Java
+* Docker Desktop — exécution des conteneurs Docker
+* Postman — tests des API REST
+* Google Chrome — notamment pour le développement et le debug de la partie Front
+* Mozilla Firefox — alternative à Chrome pour le développement et le debug Front
+* DBeaver — client permettant d’accéder aux différentes bases de données
+
+Une fois ces applications installées, vérifier qu’elles démarrent correctement.
+
+2. Obtention temporaire des droits administrateur
+
+Certaines étapes de l’installation et de la configuration nécessitent des droits administrateur sur le Mac, notamment :
+
+* la configuration de Docker Desktop ;
+* l’installation de certains outils en ligne de commande ;
+* l’installation et la configuration des outils via Homebrew (brew).
+
+Pour obtenir ces droits, effectuer une demande d’accès à l’application Admin temporaire.
+
+Une fois activée, l’application permet d’obtenir les droits administrateur pendant 15 minutes sur le poste.
+
+Attention : les droits expirent automatiquement après 15 minutes.
+Si l’installation ou la configuration nécessite davantage de temps, relancer l’application Admin temporaire après expiration afin d’obtenir une nouvelle période de 15 minutes.
+
+Il est donc recommandé d’ouvrir l’application Admin temporaire juste avant de commencer une opération nécessitant les droits administrateur.
+
+3. Configuration de Docker Desktop
+
+Après l’installation de Docker Desktop depuis Self Service :
+
+1. Activer les droits via Admin temporaire.
+2. Démarrer Docker Desktop.
+3. Effectuer les opérations de configuration nécessitant les droits administrateur.
+4. Vérifier que Docker démarre correctement.
+5. Vérifier le fonctionnement du moteur Docker depuis un terminal.
+
+4. Installation des outils complémentaires avec Homebrew
+
+Les outils de développement qui ne sont pas disponibles directement dans Self Service sont installés depuis un terminal à l’aide de Homebrew (brew).
+
+Avant de commencer, activer si nécessaire les droits via Admin temporaire.
+
+Les outils concernés et les commandes d’installation sont détaillés dans la section suivante.
+
+Ensuite, je mettrais JDK 11, Maven 3.6, Git, Node.js 10.17.0, Tomcat, etc. dans la section 4 en précisant pour chacun Self Service / brew / installation manuelle. Ça rendra la procédure beaucoup plus facile à suivre pour un nouveau développeur.
