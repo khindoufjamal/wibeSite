@@ -1,0 +1,331 @@
+À partir de tes captures, je mettrais à jour la documentation en gardant uniquement ce qui sert réellement à monter l’environnement de dev RTL sur macOS, et en retirant Obsidian, Windows App, etc.
+
+Installation et configuration de l’environnement de développement RTL – macOS
+
+1. Installation des applications de développement via Self Service
+
+Ouvrir Self Service – Applications FDJ et installer les applications nécessaires au développement :
+
+* IntelliJ IDEA — IDE Java
+* Docker Desktop — environnement Docker local
+* Postman — tests des API
+* DBeaver — accès aux bases de données
+* Google Chrome ou Mozilla Firefox — développement et debug de la partie Front
+
+⸻
+
+2. Droits administrateur temporaires
+
+Certaines opérations nécessitent des droits administrateur sur le Mac, notamment :
+
+* l’installation et la configuration de Homebrew ;
+* la configuration initiale de Docker Desktop ;
+* certaines installations d’outils de développement.
+
+Faire au préalable une demande d’accès à l’application Admin temporaire.
+
+L’application permet d’obtenir les droits administrateur pendant 15 minutes.
+
+Les droits expirent automatiquement après 15 minutes.
+Si l’opération n’est pas terminée, relancer l’application Admin temporaire pour obtenir une nouvelle période de 15 minutes.
+
+Il est recommandé d’activer les droits juste avant de commencer les installations nécessitant des privilèges administrateur.
+
+⸻
+
+3. Installation de Homebrew
+
+Homebrew est utilisé pour installer certains outils nécessaires à l’environnement de développement.
+
+Vérifier tout d’abord s’il est déjà installé :
+
+brew --version
+
+S’il n’est pas installé, effectuer son installation pendant que les droits administrateur temporaires sont actifs.
+
+Une fois l’installation terminée, vérifier :
+
+brew --version
+
+⸻
+
+4. Installation et configuration de SDKMAN
+
+SDKMAN permet de gérer les versions de Java et des outils JVM nécessaires au projet.
+
+Installation :
+
+curl -s "https://get.sdkman.io" | zsh
+
+Recharger le shell :
+
+source ~/.zshrc
+
+Vérifier :
+
+sdk version
+
+Afficher les versions Java disponibles :
+
+sdk list java
+
+Java
+
+Installer le JDK utilisé par le projet.
+
+Exemple pour Java 21 :
+
+sdk install java 21.0.11-tem
+
+Vérifier :
+
+java -version
+
+Maven
+
+Installer Maven via SDKMAN :
+
+sdk install maven
+
+Vérifier :
+
+mvn --version
+
+Tomcat
+
+Si nécessaire pour le projet, installer la version de Tomcat attendue :
+
+sdk install tomcat
+
+Vérifier ensuite la version installée.
+
+⸻
+
+5. Installation de Node.js avec NVM
+
+Installer NVM via Homebrew :
+
+brew install nvm
+
+Créer le répertoire NVM :
+
+mkdir -p ~/.nvm
+
+Configurer NVM dans ~/.zshrc, puis recharger la configuration :
+
+source ~/.zshrc
+
+Vérifier :
+
+command -v nvm
+
+Installer ensuite la version de Node.js attendue par le projet.
+
+Pour l’environnement RTL actuel :
+
+nvm install 10.24.1
+nvm use 10.24.1
+
+Vérifier :
+
+node -v
+npm -v
+
+Utiliser la version Node.js définie par le projet si celle-ci évolue.
+
+⸻
+
+6. Git
+
+Vérifier que Git est disponible :
+
+git --version
+
+Si nécessaire :
+
+brew install git
+
+Configurer ensuite l’identité Git :
+
+git config --global user.name "Prénom Nom"
+git config --global user.email "prenom.nom@..."
+
+Ne pas désactiver globalement la vérification SSL de Git. Si un problème de certificat interne est rencontré, utiliser la configuration/certificat d’entreprise prévu à cet effet.
+
+⸻
+
+7. Configuration Maven
+
+Créer si nécessaire le répertoire Maven :
+
+mkdir -p ~/.m2
+
+Récupérer le fichier settings.xml fourni pour l’environnement RTL et le placer dans :
+
+~/.m2/settings.xml
+
+Vérifier ensuite que Maven utilise correctement les repositories internes :
+
+mvn --version
+
+⸻
+
+8. Docker Desktop
+
+Docker Desktop doit être installé depuis Self Service.
+
+Lors du premier démarrage :
+
+1. Activer Admin temporaire.
+2. Lancer Docker Desktop.
+3. Autoriser les opérations système demandées par Docker.
+4. Attendre le démarrage complet du moteur Docker.
+
+Vérifier ensuite :
+
+docker --version
+docker ps
+
+Un test simple peut également être effectué :
+
+docker run hello-world
+
+⸻
+
+9. Récupération du projet RTL
+
+Créer les répertoires de travail :
+
+mkdir -p ~/dev
+cd ~/dev
+
+Cloner le repository RTL depuis le GitLab interne :
+
+git clone <URL_GITLAB_RTL>
+
+Utiliser son propre compte/token GitLab. Ne jamais mettre un token personnel directement dans la documentation.
+
+Une fois le repository récupéré :
+
+cd rtl
+git status
+
+⸻
+
+10. Préparation de l’environnement Docker RTL
+
+Créer le répertoire destiné à l’environnement Docker :
+
+mkdir -p ~/dev/rtl-docker
+
+Depuis le repository RTL, récupérer/copier le contenu de l’environnement Docker fourni par le projet vers ce répertoire.
+
+Définir ensuite les variables d’environnement nécessaires dans ~/.zshrc :
+
+export DEV_RTL_SRC_DIR="$HOME/dev/rtl"
+export DEV_RTL_DOCKER_DIR="$HOME/dev/rtl-docker"
+
+Puis :
+
+source ~/.zshrc
+
+Vérifier :
+
+echo $DEV_RTL_SRC_DIR
+echo $DEV_RTL_DOCKER_DIR
+
+⸻
+
+11. Build et démarrage de l’environnement RTL
+
+Se positionner dans l’environnement Docker :
+
+cd "$DEV_RTL_DOCKER_DIR"
+
+Selon les scripts fournis par le projet, rendre les scripts exécutables si nécessaire :
+
+chmod +x *.sh
+chmod +x bin/internal/*.sh
+
+Lancer ensuite le build :
+
+./build.sh
+
+Puis démarrer l’environnement :
+
+./build.sh
+./up.sh
+
+Vérifier l’état des conteneurs :
+
+docker ps
+
+Pour consulter les logs :
+
+docker compose logs -f
+
+⸻
+
+12. Configuration IntelliJ IDEA
+
+Après installation depuis Self Service, ouvrir le projet RTL dans IntelliJ IDEA.
+
+Plugins
+
+Installer les plugins nécessaires au projet, notamment :
+
+* AspectJ
+* Maven Helper
+
+Depuis :
+
+Settings → Plugins → Marketplace
+
+Style de code
+
+Importer le fichier de configuration de style de code fourni par le projet, par exemple Lotsys.xml :
+
+Settings → Editor → Code Style → Java → Scheme → Import Scheme
+
+Imports automatiques
+
+Configurer :
+
+Settings → Editor → General → Auto Import
+
+et activer l’optimisation automatique des imports selon les conventions du projet.
+
+Vérifier également qu’IntelliJ utilise :
+
+* le bon JDK ;
+* la bonne configuration Maven ;
+* le fichier ~/.m2/settings.xml.
+
+⸻
+
+13. Vérification finale
+
+Avant de récupérer et démarrer l’application, vérifier l’environnement :
+
+git --version
+java -version
+mvn --version
+node -v
+npm -v
+docker --version
+docker ps
+
+Puis vérifier :
+
+* IntelliJ IDEA opérationnel ;
+* Docker Desktop démarré ;
+* accès au GitLab interne ;
+* repository RTL cloné ;
+* settings.xml Maven installé ;
+* variables DEV_RTL_SRC_DIR et DEV_RTL_DOCKER_DIR définies ;
+* build Maven fonctionnel ;
+* environnement Docker RTL démarrable.
+
+Une fois ces vérifications terminées, le poste est prêt pour la configuration et le lancement du projet RTL.
+
+Point important : dans tes captures d’historique, on voit une URL de clone contenant ce qui ressemble à un token GitLab personnel ainsi qu’un git config --global http.sslVerify false. Je ne les recopierais surtout pas dans la documentation. Pour le token, s’il est encore valide et si la capture a été partagée ailleurs, il vaut mieux le révoquer/remplacer.
