@@ -85,4 +85,57 @@ Ajouter les entrées correspondant aux services utilisés par l’environnement 
 
 127.0.0.1 <nom-du-service>
 
-Les valeurs exactes doivent être adaptées à l’environnement de développement utilisé.
+Les valeurs exactes doivent être adaptées à l’environnement de développement Sure — here is a simpler English version:
+
+4. Build the Projects
+
+The fbo-angular module uses Gulp to build the project.
+
+Run the commands from the project folder.
+
+4.1 Requirements
+
+You need:
+
+Node.js v10.17.0
+Yarn
+Git
+
+You can use NVM to install the correct Node.js version.
+
+4.2 Install the Project
+
+Run:
+
+yarn install --ignore-engines
+
+This command installs the project dependencies.
+
+4.3 Build the Project
+
+You can build the project with:
+
+yarn install --ignore-engines
+
+You can also run the build steps separately:
+
+typings install
+gulp build
+
+4.4 Development
+
+To see the available Gulp commands:
+
+gulp
+
+To rebuild the project automatically when a file changes:
+
+gulp watch
+
+4.5 Publish
+
+To publish the module:
+
+npm publish
+
+Before publishing, make sure the project builds without errors.
