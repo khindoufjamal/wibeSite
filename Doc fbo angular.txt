@@ -1,0 +1,88 @@
+Voici une version corrigée, plus claire et plus professionnelle de la partie visible sur tes captures, en restant cohérent avec le README du projet :
+
+Build des projets Front
+
+Prérequis
+
+Les projets Front nécessitent Node.js, Yarn, Gulp et les différents outils associés au build.
+
+Installer Node.js 10.17.0. Il est recommandé d’utiliser NVM afin de gérer les différentes versions de Node.js et de s’assurer que la version active est bien la 10.17.0.
+
+Installer ensuite les outils nécessaires :
+
+npm install -g typescript
+npm install -g gulp
+npm install -g gulp-cli
+npm install -g gulp-task-listing
+npm install -g gulp-util
+npm install -g gulp-typescript
+npm install -g typings
+npm install -g yarn
+
+Vérifier ensuite les versions installées :
+
+node --version
+npm --version
+yarn --version
+gulp --version
+
+Installation des dépendances
+
+Depuis le répertoire du projet Front concerné (fbo-backoffice-module, fbo-station, fbo-validation, etc.), installer les dépendances avec :
+
+yarn install --ignore-engines
+
+L’option --ignore-engines est nécessaire pour les modules historiques dont les dépendances ne sont pas nécessairement compatibles avec les contrôles de version des versions récentes de Yarn.
+
+Build du projet
+
+Pour lancer manuellement les différentes étapes du build :
+
+typings install
+gulp build
+
+Le module fbo-angular utilise Gulp pour son processus de build et nécessite que Node.js soit installé.
+
+Pour ce module, l’installation des dépendances et le build sont également déclenchés via :
+
+yarn install --ignore-engines
+
+Mode développement
+
+Les projets disposent de plusieurs tâches Gulp permettant de faciliter le développement.
+
+Pour afficher la liste des tâches disponibles :
+
+gulp
+
+Pour surveiller les modifications des fichiers et reconstruire automatiquement le package :
+
+gulp watch
+
+Publication d’un module
+
+Lorsque la publication d’un module est nécessaire, utiliser :
+
+npm publish
+
+La publication ne doit être effectuée que dans le cadre du processus de livraison prévu par le projet.
+
+Configuration de Visual Studio Code
+
+Lancer Visual Studio Code, puis ouvrir le répertoire contenant les sources :
+
+File → Open Folder…
+
+Sélectionner le répertoire racine dans lequel les différents projets Front ont été installés.
+
+Configuration des adresses IP
+
+Si la résolution locale de certains services est nécessaire, modifier le fichier :
+
+/etc/hosts
+
+Ajouter les entrées correspondant aux services utilisés par l’environnement local, par exemple :
+
+127.0.0.1 <nom-du-service>
+
+Les valeurs exactes doivent être adaptées à l’environnement de développement utilisé.
