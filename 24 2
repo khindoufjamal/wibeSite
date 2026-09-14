@@ -1,0 +1,756 @@
+Oui. En recoupant le ticket RTL-1324 et toutes tes captures, je ferais la correction en séparant bien les clés techniques utilisées par le front des headers réellement écrits dans le CSV.
+
+Le résultat historique demandé par le ticket est exactement :
+
+RES_EXTERNAL_ID;
+RES_FIRST_NAME;
+RES_LAST_NAME;
+EVENT_DATE_TIME;
+OFFER;
+OPERATION_TYPE;
+OPERATION_ACTION_TYPE;
+PRODUCT;
+TYPE_LIMIT
+
+Et il faut supprimer PERIOD.
+
+1. BACK — EventLogExportConstants.java
+
+Fichier :
+
+rtl-log-core
+└── src/main/java/com/fgs/rtl/log/core/constants/EventLogExportConstants.java
+
+Aujourd’hui tu as notamment :
+
+public static final String COLUMN_EVENT_DATE_TIME = "DATE";
+public static final String COLUMN_RESELLER_EXTERNAL_ID = "RESELLER_ID";
+public static final String COLUMN_RESELLER_FIRST_NAME = "RESELLER_FIRST_NAME";
+public static final String COLUMN_RESELLER_LAST_NAME = "RESELLER_LAST_NAME";
+public static final String COLUMN_OFFER = "OFFER";
+public static final String COLUMN_DAILY_OR_WEEKLY = "PERIOD";
+
+Je ne changerais pas les constantes communes existantes, parce que DATE, RESELLER_ID, etc. peuvent être utilisées par d’autres exports.
+
+Ajoute les headers historiques spécifiques à l’export limite :
+
+public static final String COLUMN_RES_EXTERNAL_ID = "RES_EXTERNAL_ID";
+public static final String COLUMN_RES_FIRST_NAME = "RES_FIRST_NAME";
+public static final String COLUMN_RES_LAST_NAME = "RES_LAST_NAME";
+public static final String COLUMN_LIMIT_EVENT_DATE_TIME = "EVENT_DATE_TIME";
+public static final String COLUMN_OPERATION_TYPE = "OPERATION_TYPE";
+public static final String COLUMN_OPERATION_ACTION_TYPE = "OPERATION_ACTION_TYPE";
+public static final String COLUMN_PRODUCT = "PRODUCT";
+public static final String COLUMN_LIMIT_TYPE = "TYPE_LIMIT";
+
+On garde donc :
+
+COLUMN_EVENT_DATE_TIME = "DATE";
+
+pour les exports standards.
+
+⸻
+
+2. BACK — ResellerEventLogPageItem.java
+
+Fichier visible dans tes captures :
+
+rtl-core
+└── src/main/java/com/lotsys/rtl/model/log/ResellerEventLogPageItem.java
+
+Tu as déjà :
+
+private Long resellerId;
+private String resellerExternalId;
+private String resellerFirstName;
+private String resellerLastName;
+private String dailyOrWeekly;
+private Long permissionTemplateId;
+private String offer;
+private String operationType;
+private String operationActionType;
+private String product;
+private String limitType;
+
+Donc côté modèle tu as déjà les quatre informations qui manquaient au nouvel export.
+
+Il faut évidemment conserver leurs getters/setters :
+
+public String getOperationType() {
+    return operationType;
+}
+public void setOperationType(final String operationType) {
+    this.operationType = operationType;
+}
+public String getOperationActionType() {
+    return operationActionType;
+}
+public void setOperationActionType(final String operationActionType) {
+    this.operationActionType = operationActionType;
+}
+public String getProduct() {
+    return product;
+}
+public void setProduct(final String product) {
+    this.product = product;
+}
+public String getLimitType() {
+    return limitType;
+}
+public void setLimitType(final String limitType) {
+    this.limitType = limitType;
+}
+
+dailyOrWeekly peut rester dans le modèle si d’autres écrans l’utilisent.
+
+Ne le supprime pas du DTO uniquement parce que PERIOD disparaît de cet export.
+
+⸻
+
+3. BACK — mapping repository / query
+
+C’est un point important : ajouter les champs au PageItem ne suffit pas.
+
+Il faut vérifier dans :
+
+AbstractEventLogRepositoryImpl.java
+
+et/ou :
+
+ResellerEventLogRepositoryCustom.java
+
+le mapping qui construit ResellerEventLogPageItem.
+
+Les quatre champs doivent réellement être alimentés :
+
+operationType
+operationActionType
+product
+limitType
+
+Autrement tu obtiendras bien quatre colonnes supplémentaires, mais vides.
+
+Dans IntelliJ, fais Find Usages sur :
+
+setOperationType
+
+ou sur :
+
+getOperationType
+
+Tu dois retrouver le mapping DB → ResellerEventLogPageItem.
+
+Le résultat doit conceptuellement avoir :
+
+item.setOperationType(...);
+item.setOperationActionType(...);
+item.setProduct(...);
+item.setLimitType(...);
+
+ou leur équivalent via projection/constructeur/mapper.
+
+C’est à vérifier avant de considérer le ticket terminé.
+
+⸻
+
+4. BACK — ResellerEventLogExportColumnRegistry.java
+
+C’est ici que se trouve la correction principale.
+
+Tu as actuellement quelque chose de ce type :
+
+@Component
+public class ResellerEventLogExportColumnRegistry
+        extends AbstractEventLogExportColumnRegistry<ResellerEventLogPageItem> {
+    private static final String KEY_RESELLER_EXTERNAL_ID = "resellerExternalId";
+    private static final String KEY_RESELLER_FIRST_NAME = "resellerFirstName";
+    private static final String KEY_RESELLER_LAST_NAME = "resellerLastName";
+    private static final String KEY_OFFER = "permissionTemplateId";
+    private static final String KEY_DAILY_OR_WEEKLY = "dailyOrWeekly";
+    ...
+}
+
+Tu as déjà commencé à ajouter :
+
+private static final String KEY_OPERATION_TYPE = "operationType";
+private static final String KEY_OPERATION_ACTION_TYPE =
+        "operationActionType";
+private static final String KEY_PRODUCT = "product";
+private static final String KEY_LIMIT_TYPE = "limitType";
+
+Ça, c’est correct.
+
+registerEntityColumns()
+
+Je partirais sur :
+
+@Override
+protected void registerEntityColumns(
+        final SequencedMap<String, ExportColumn<ResellerEventLogPageItem>> map) {
+    map.put(
+        KEY_RESELLER_EXTERNAL_ID,
+        column(
+            COLUMN_RES_EXTERNAL_ID,
+            item -> defaultString(item.getResellerExternalId())
+        )
+    );
+    map.put(
+        KEY_RESELLER_FIRST_NAME,
+        column(
+            COLUMN_RES_FIRST_NAME,
+            item -> defaultString(item.getResellerFirstName())
+        )
+    );
+    map.put(
+        KEY_RESELLER_LAST_NAME,
+        column(
+            COLUMN_RES_LAST_NAME,
+            item -> defaultString(item.getResellerLastName())
+        )
+    );
+    map.put(
+        KEY_OFFER,
+        column(
+            COLUMN_OFFER,
+            item -> defaultString(item.getOffer())
+        )
+    );
+    map.put(
+        KEY_DAILY_OR_WEEKLY,
+        column(
+            COLUMN_DAILY_OR_WEEKLY,
+            item -> defaultString(item.getDailyOrWeekly())
+        )
+    );
+    map.put(
+        KEY_OPERATION_TYPE,
+        column(
+            COLUMN_OPERATION_TYPE,
+            item -> defaultString(item.getOperationType())
+        )
+    );
+    map.put(
+        KEY_OPERATION_ACTION_TYPE,
+        column(
+            COLUMN_OPERATION_ACTION_TYPE,
+            item -> defaultString(item.getOperationActionType())
+        )
+    );
+    map.put(
+        KEY_PRODUCT,
+        column(
+            COLUMN_PRODUCT,
+            item -> defaultString(item.getProduct())
+        )
+    );
+    map.put(
+        KEY_LIMIT_TYPE,
+        column(
+            COLUMN_LIMIT_TYPE,
+            item -> defaultString(item.getLimitType())
+        )
+    );
+}
+
+Attention à dailyOrWeekly
+
+Je ne supprime pas :
+
+map.put(KEY_DAILY_OR_WEEKLY, ...)
+
+du registry.
+
+Pourquoi ?
+
+Parce que le registry décrit ce que le backend sait exporter.
+
+C’est getExportColumns() du front qui va décider que l’export limite ne demande plus dailyOrWeekly.
+
+C’est beaucoup moins risqué.
+
+⸻
+
+5. BACK — problème particulier DATE → EVENT_DATE_TIME
+
+C’est le seul changement un peu délicat.
+
+Dans :
+
+AbstractEventLogExportColumnRegistry.java
+
+tu as :
+
+private void registerCommonColumns(
+        final SequencedMap<String, ExportColumn<T>> map) {
+    map.put(
+        KEY_EVENT_DATE_TIME,
+        column(
+            COLUMN_EVENT_DATE_TIME,
+            item -> formatDate(item.getEventDateTime())
+        )
+    );
+    ...
+}
+
+avec :
+
+COLUMN_EVENT_DATE_TIME = "DATE";
+
+Donc aujourd’hui :
+
+eventDateTime
+     ↓
+ExportColumn(header="DATE")
+     ↓
+CSV = DATE
+
+Mais RTL-1324 exige :
+
+EVENT_DATE_TIME
+
+Solution que je privilégie
+
+Ne change pas globalement :
+
+COLUMN_EVENT_DATE_TIME = "DATE";
+
+Sinon tu risques de modifier les autres exports.
+
+Rends le nom du header surchargeable.
+
+Dans AbstractEventLogExportColumnRegistry.java, ajoute :
+
+protected String eventDateTimeColumnHeader() {
+    return COLUMN_EVENT_DATE_TIME;
+}
+
+Puis remplace :
+
+map.put(
+    KEY_EVENT_DATE_TIME,
+    column(
+        COLUMN_EVENT_DATE_TIME,
+        item -> formatDate(item.getEventDateTime())
+    )
+);
+
+par :
+
+map.put(
+    KEY_EVENT_DATE_TIME,
+    column(
+        eventDateTimeColumnHeader(),
+        item -> formatDate(item.getEventDateTime())
+    )
+);
+
+Par défaut, rien ne change :
+
+DATE
+
+Ensuite dans :
+
+ResellerEventLogExportColumnRegistry.java
+
+tu peux faire :
+
+@Override
+protected String eventDateTimeColumnHeader() {
+    return COLUMN_LIMIT_EVENT_DATE_TIME;
+}
+
+et donc :
+
+eventDateTime → EVENT_DATE_TIME
+
+Mais il y a une nuance
+
+ResellerEventLogExportColumnRegistry semble potentiellement être utilisé par tous les exports reseller, pas seulement Limite alarme/blocage.
+
+Si c’est le cas, cette surcharge ferait passer tous les exports Reseller de DATE à EVENT_DATE_TIME.
+
+Donc avant d’appliquer cette partie, fais Find Usages sur :
+
+ResellerEventLogExportColumnRegistry
+
+Si le registry est exclusivement utilisé pour ce flux historique : OK.
+
+Sinon, il faudra rendre le header dépendant du type d’export ou créer une configuration spécifique au rapport limite.
+
+⸻
+
+6. BACK — ExportColumn.java
+
+Aucune modification.
+
+Tes captures montrent :
+
+public record ExportColumn<T>(
+        String header,
+        Function<T, String> valueExtractor) {
+
+et :
+
+public String getHeader() {
+    return header;
+}
+public String extractValue(T item) {
+    try {
+        return valueExtractor.apply(item);
+    } catch (Exception e) {
+        logger.warn(...);
+        return EMPTY;
+    }
+}
+
+C’est exactement ce qu’il faut.
+
+Le header et la valeur sont correctement séparés.
+
+⸻
+
+7. BACK — ExportColumns.java
+
+Aucune modification non plus.
+
+Tu as :
+
+public static <T> ExportColumn<T> column(
+        final String header,
+        final Function<T, String> valueExtractor) {
+    return new ExportColumn<>(header, valueExtractor);
+}
+
+C’est correct.
+
+⸻
+
+8. BACK — AbstractEventLogExportColumnRegistry.resolve()
+
+Ta dernière capture est très importante.
+
+Tu as :
+
+private List<ExportColumn<T>> resolve(final List<String> columnNames) {
+    if (columnNames == null || columnNames.isEmpty()) {
+        return defaultColumns();
+    }
+    final List<ExportColumn<T>> resolved = parseColumns(columnNames);
+    return resolved.isEmpty()
+            ? defaultColumns()
+            : resolved;
+}
+
+et :
+
+private List<ExportColumn<T>> defaultColumns() {
+    return defaultColumnKeys()
+            .stream()
+            .map(columns::get)
+            .toList();
+}
+
+Donc le front doit envoyer les keys, et non les headers CSV.
+
+C’est capital.
+
+Le front doit envoyer :
+
+resellerExternalId
+
+et PAS :
+
+RES_EXTERNAL_ID
+
+Le backend fait ensuite :
+
+resellerExternalId
+        ↓
+columns.get("resellerExternalId")
+        ↓
+ExportColumn(
+   header = "RES_EXTERNAL_ID",
+   extractor = ...
+)
+
+⸻
+
+9. FRONT — getExportColumns()
+
+C’est ici que tu corriges la composition et l’ordre de l’export Limite alarme/blocage.
+
+Actuellement, vu le CSV obtenu, ton front finit probablement par demander quelque chose correspondant à :
+
+resellerExternalId
+resellerFirstName
+resellerLastName
+eventDateTime
+permissionTemplateId
+dailyOrWeekly
+
+Ce qui produit :
+
+RESELLER_ID
+RESELLER_FIRST_NAME
+RESELLER_LAST_NAME
+DATE
+OFFER
+PERIOD
+
+C’est exactement ton bug.
+
+Pour le rapport limite, getExportColumns() doit retourner :
+
+getExportColumns(): string[] {
+  return [
+    'resellerExternalId',
+    'resellerFirstName',
+    'resellerLastName',
+    'eventDateTime',
+    'permissionTemplateId',
+    'operationType',
+    'operationActionType',
+    'product',
+    'limitType'
+  ];
+}
+
+Donc tu retires :
+
+'dailyOrWeekly'
+
+et tu ajoutes :
+
+'operationType',
+'operationActionType',
+'product',
+'limitType'
+
+L’ordre est important
+
+Il faut conserver exactement :
+
+1 resellerExternalId
+2 resellerFirstName
+3 resellerLastName
+4 eventDateTime
+5 permissionTemplateId
+6 operationType
+7 operationActionType
+8 product
+9 limitType
+
+Parce que parseColumns() conserve a priori l’ordre de la liste reçue.
+
+⸻
+
+10. FRONT — seulement Limite alarme / Limite blocage
+
+C’est un autre point essentiel.
+
+Ne change pas un getExportColumns() partagé par tous les rapports si celui-ci sert également à d’autres historiques.
+
+La logique doit être appliquée aux deux rapports concernés :
+
+Rapport > Limite alarme
+Rapport > Limite blocage
+
+Ils doivent tous les deux demander :
+
+[
+  'resellerExternalId',
+  'resellerFirstName',
+  'resellerLastName',
+  'eventDateTime',
+  'permissionTemplateId',
+  'operationType',
+  'operationActionType',
+  'product',
+  'limitType'
+]
+
+Si tu as une classe de base côté Angular, je créerais plutôt :
+
+private readonly LIMIT_EXPORT_COLUMNS: string[] = [
+  'resellerExternalId',
+  'resellerFirstName',
+  'resellerLastName',
+  'eventDateTime',
+  'permissionTemplateId',
+  'operationType',
+  'operationActionType',
+  'product',
+  'limitType'
+];
+getExportColumns(): string[] {
+  return LIMIT_EXPORT_COLUMNS;
+}
+
+⸻
+
+11. Ce que le front envoie réellement au back
+
+Au clic sur Export :
+
+getExportColumns()
+        ↓
+[
+ resellerExternalId,
+ resellerFirstName,
+ resellerLastName,
+ eventDateTime,
+ permissionTemplateId,
+ operationType,
+ operationActionType,
+ product,
+ limitType
+]
+        ↓
+HTTP
+        ↓
+ResellerLogAdminFeatureImpl.export(pageQuery, columns)
+
+Sur ta capture backend :
+
+public Response export(
+        final PageQuery pageQuery,
+        final List<String> columns)
+        throws LogAdminException {
+
+Puis :
+
+return exportService.exportStream(
+    eventLogRepository.queryAllAsStream(predicate, entityQuery),
+    columnRegistry.buildExportConfiguration(
+        columns,
+        pageQuery.getFilters()
+    )
+);
+
+Donc aucun changement nécessaire dans :
+
+ResellerLogAdminFeatureImpl.java
+
+Le mécanisme est déjà correct.
+
+⸻
+
+12. Tests BACK à ajouter
+
+Je considère ça indispensable pour une régression.
+
+Sur ResellerEventLogExportColumnRegistry, teste une configuration :
+
+final var requestedColumns = List.of(
+    "resellerExternalId",
+    "resellerFirstName",
+    "resellerLastName",
+    "eventDateTime",
+    "permissionTemplateId",
+    "operationType",
+    "operationActionType",
+    "product",
+    "limitType"
+);
+final var configuration =
+        registry.buildExportConfiguration(requestedColumns, filters);
+
+Puis vérifie les headers :
+
+assertThat(configuration.columns())
+    .extracting(ExportColumn::getHeader)
+    .containsExactly(
+        "RES_EXTERNAL_ID",
+        "RES_FIRST_NAME",
+        "RES_LAST_NAME",
+        "EVENT_DATE_TIME",
+        "OFFER",
+        "OPERATION_TYPE",
+        "OPERATION_ACTION_TYPE",
+        "PRODUCT",
+        "TYPE_LIMIT"
+    );
+
+Et explicitement :
+
+assertThat(configuration.columns())
+    .extracting(ExportColumn::getHeader)
+    .doesNotContain("PERIOD");
+
+Ajoute également un test des valeurs pour éviter d’avoir les bons headers avec des cellules vides.
+
+⸻
+
+13. Test FRONT
+
+Pour getExportColumns() :
+
+it('should return historical limit export columns', () => {
+  expect(component.getExportColumns()).toEqual([
+    'resellerExternalId',
+    'resellerFirstName',
+    'resellerLastName',
+    'eventDateTime',
+    'permissionTemplateId',
+    'operationType',
+    'operationActionType',
+    'product',
+    'limitType'
+  ]);
+});
+
+Ça protège précisément la régression RTL-1324.
+
+⸻
+
+14. Validation manuelle finale
+
+Après compilation, ouvre DevTools → Network et déclenche :
+
+Rapport → Limite alarme → Export CSV
+
+Dans la requête, vérifie que le front transmet les neuf keys :
+
+resellerExternalId
+resellerFirstName
+resellerLastName
+eventDateTime
+permissionTemplateId
+operationType
+operationActionType
+product
+limitType
+
+Il ne doit plus transmettre :
+
+dailyOrWeekly
+
+Ensuite mets ton breakpoint dans :
+
+ResellerLogAdminFeatureImpl.export()
+
+Tu dois voir :
+
+columns.size() == 9
+
+Puis dans columnRegistry, tu dois retrouver neuf ExportColumn.
+
+Enfin le fichier doit commencer par :
+
+RES_EXTERNAL_ID;RES_FIRST_NAME;RES_LAST_NAME;EVENT_DATE_TIME;OFFER;OPERATION_TYPE;OPERATION_ACTION_TYPE;PRODUCT;TYPE_LIMIT
+
+Et surtout :
+
+PERIOD
+
+doit avoir disparu.
+
+En résumé : fichiers réellement à modifier
+
+Front : le fichier contenant getExportColumns() pour Limite alarme/blocage, afin de restaurer les 9 keys historiques et supprimer dailyOrWeekly.
+
+Back : EventLogExportConstants.java pour les headers historiques, ResellerEventLogExportColumnRegistry.java pour associer keys → headers → getters, potentiellement AbstractEventLogExportColumnRegistry.java uniquement pour rendre le header EVENT_DATE_TIME surchargeable, et le mapper/repository seulement si les quatre nouvelles propriétés ne sont pas encore alimentées.
+
+À ne pas toucher : ExportColumn.java, ExportColumns.java et normalement ResellerLogAdminFeatureImpl.java.
+
+Le seul élément que je ne peux pas déterminer avec certitude à partir des captures est le nom exact du fichier Angular qui contient getExportColumns() et le mapping repository des quatre champs. Le reste du flux est maintenant suffisamment visible pour établir cette implémentation.
