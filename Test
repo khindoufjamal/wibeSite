@@ -1,0 +1,138 @@
+Oui. En reprenant la structure de ton OperationReportFeatureSpec, je créerais une première classe dédiée à FinancialReport comme ceci. J’ai volontairement regroupé les validations avec un @Unroll pour éviter 8 tests quasiment identiques.
+
+package com.fgs.rtl.test.operation
+import com.fgs.rtl.operation.api.OperationFeature
+import com.fgs.rtl.operation.api.model.financialreport.FinancialReport
+import spock.lang.Unroll
+import javax.inject.Inject
+import static com.fgs.rtl.operation.api.model.OperationReportType.RESELLER
+class FinancialReportFeatureSpec extends AbstractRTLFeatureSpec {
+    @Inject
+    OperationFeature feature
+    def "financial report - valid single date"() {
+        given: "a reseller"
+        location {
+            reseller {
+                account {
+                    sessions(1) {
+                        authenticated = true
+                    }
+                }
+            }
+        }
+        and: "the reseller external id"
+        String externalId = RTLContextHolder.context.firstReseller.get().externalId
+        when: "financial report is requested for a single date"
+        FinancialReport report = feature.financialReport(
+                RESELLER,
+                externalId,
+                null,
+                "07/10/2026",
+                null,
+                null
+        )
+        then: "the report is returned"
+        noExceptionThrown()
+        report != null
+    }
+    def "financial report - valid date range"() {
+        given: "a reseller"
+        location {
+            reseller {
+                account {
+                    sessions(1) {
+                        authenticated = true
+                    }
+                }
+            }
+        }
+        and: "the reseller external id"
+        String externalId = RTLContextHolder.context.firstReseller.get().externalId
+        when: "financial report is requested for a period"
+        FinancialReport report = feature.financialReport(
+                RESELLER,
+                externalId,
+                null,
+                null,
+                "01/10/2026",
+                "07/10/2026"
+        )
+        then: "the report is returned"
+        noExceptionThrown()
+        report != null
+    }
+    def "financial report - unknown externalId"() {
+        when: "financial report is requested with an unknown external id"
+        feature.financialReport(
+                RESELLER,
+                "UNKNOWN_EXTERNAL_ID",
+                null,
+                "07/10/2026",
+                null,
+                null
+        )
+        then: "the request is rejected"
+        thrown(OperationException)
+    }
+    @Unroll
+    def "financial report - invalid date parameters - #scenario"() {
+        given: "a reseller"
+        location {
+            reseller {
+                account {
+                    sessions(1) {
+                        authenticated = true
+                    }
+                }
+            }
+        }
+        and: "the reseller external id"
+        String externalId = RTLContextHolder.context.firstReseller.get().externalId
+        when: "financial report is requested"
+        feature.financialReport(
+                RESELLER,
+                externalId,
+                null,
+                date,
+                fromDate,
+                toDate
+        )
+        then: "the request is rejected"
+        thrown(OperationException)
+        where:
+        scenario                         | date         | fromDate     | toDate
+        "date and period together"       | "07/10/2026" | "01/10/2026" | "07/10/2026"
+        "fromDate without toDate"        | null         | "01/10/2026" | null
+        "toDate without fromDate"        | null         | null         | "07/10/2026"
+        "all dates are null"             | null         | null         | null
+        "fromDate after toDate"          | null         | "10/10/2026" | "01/10/2026"
+    }
+}
+
+Pour les @Pattern
+
+Je ne mettrais pas encore ceci dans cette classe :
+
+date = "2026-10-07"
+fromDate = "2026-10-01"
+toDate = "2026-10-07"
+
+car dans ta capture, le contrôle du format vient de :
+
+@Pattern(regexp = "^\\d{2}/\\d{2}/\\d{4}$")
+
+Cette annotation est portée par l’interface REST. Un appel direct :
+
+feature.financialReport(...)
+
+ne garantit pas que Bean Validation soit exécutée.
+
+Même chose pour :
+
+@NotNull String externalId
+
+Donc externalId = null et les trois tests de mauvais format doivent plutôt aller dans le Spec qui teste l’endpoint REST, sauf si ton OperationFeatureImpl refait explicitement ces contrôles.
+
+Il faudra également adapter les imports de OperationException, RTLContextHolder et éventuellement OperationReportType aux packages exacts de ton projet. Le reste reprend volontairement le style de ton OperationReportFeatureSpec.
+
+Si tu me montres maintenant OperationFeatureImpl.financialReport(), je peux te générer la version suivante avec les exceptions exactes et tous les cas limites de dates sans approximation.
