@@ -1,0 +1,203 @@
+Je vais reprendre l’implémentation du ticket RTL-1440 – Financial Report, depuis OperationFeatureImpl.generateFinancialReport() jusqu’au DAO, en passant par le service, le repository et le mapper.
+
+L’objectif est de conserver l’architecture existante du projet RTL et de construire un rapport financier avec les indicateurs ADD, CAN, REG et les promotions.
+
+1. Règles métier à respecter
+
+Élément	Comportement
+Période	Filtrage sur Operation.creationDate (OPR_CREATION_DATE)
+Toutes les opérations	Calcul des indicateurs globaux
+1 ExternalService	Agrégation dans le service correspondant
+0 ExternalService	Agrégation dans undefinedExternalService
+Plusieurs ExternalService	Agrégation dans undefinedExternalService
+Montants	Calcul en centimes
+Validation	externalId, filterConfigId, date, fromDate, toDate, type
+
+Attention : pour le classement mono-produit, je pars de ta règle explicite : une opération ayant exactement un ExternalService est mono-produit.
+
+L’agrégation globale et les agrégations par service doivent utiliser les mêmes opérations, sans les compter deux fois dans les totaux.
+
+2. Implémentation de generateFinancialReport()
+
+D’après ta capture, la signature est :
+
+@Override
+public FinancialReport generateFinancialReport(
+        final OperationReportType type,
+        final String externalId,
+        final String filterConfigId,
+        final String date,
+        final String fromDate,
+        final String toDate
+) throws OperationException
+
+Voici la logique à mettre dans OperationFeatureImpl.
+
+@Override
+public FinancialReport generateFinancialReport(
+        final OperationReportType type,
+        final String externalId,
+        final String filterConfigId,
+        final String date,
+        final String fromDate,
+        final String toDate
+) throws OperationException {
+    final String id = validateFinancialReportRequest(
+            externalId,
+            filterConfigId,
+            fromDate,
+            toDate,
+            date,
+            type
+    );
+    final FinancialReportPeriod period =
+            financialReportPeriodResolver.resolve(
+                    date, fromDate, toDate
+            );
+    final List<Operation> operations =
+            operationService.findForFinancialReport(
+                    type,
+                    id,
+                    filterConfigId,
+                    period.getFrom(),
+                    period.getTo()
+            );
+    return financialReportMapper.map(
+            type,
+            id,
+            period,
+            operations
+    );
+}
+
+FinancialReportPeriod, financialReportPeriodResolver et financialReportMapper sont ici des composants à créer. Cette version est une architecture cible, pas encore du code directement compilable dans ton projet.
+
+3. DAO — récupérer les opérations
+
+Dans OperationRepositoryCustom.java, on peut déclarer :
+
+List<Operation> findForFinancialReport(
+        OperationReportType type,
+        String externalId,
+        String filterConfigId,
+        OffsetDateTime from,
+        OffsetDateTime to
+);
+
+Puis dans OperationRepositoryImpl.java, utiliser une requête JPQL avec une borne de début inclusive et une borne de fin exclusive.
+
+public List<Operation> findForFinancialReport(
+        OffsetDateTime from,
+        OffsetDateTime to) {
+    return entityManager.createQuery("""
+            SELECT DISTINCT o
+            FROM Operation o
+            LEFT JOIN FETCH o.externalServices
+            WHERE o.creationDate >= :from
+              AND o.creationDate < :to
+            """, Operation.class)
+        .setParameter("from", from)
+        .setParameter("to", to)
+        .getResultList();
+}
+
+Cette requête est le socle du DAO. Il faudra ajouter les restrictions correspondant à type, externalId et filterConfigId selon les associations réelles de ton modèle. Il ne faut pas les ignorer dans la version finale.
+
+Le LEFT JOIN FETCH permet de récupérer également les opérations sans service externe, indispensables au calcul de undefinedExternalService.
+
+4. Mapper — calculer les indicateurs
+
+Je te recommande de créer FinancialReportMapper.java avec trois responsabilités :
+
+* Calculer les indicateurs globaux sur toutes les opérations.
+* Répartir les opérations mono-service dans leurs agrégats.
+* Regrouper les opérations sans service ou multi-services dans undefinedExternalService.
+
+Voici la structure centrale :
+
+public class FinancialReportMapper {
+    public MovementBlock mapMovementBlock(
+            List<Operation> operations) {
+        FinancialIndicatorsAccumulator global =
+                new FinancialIndicatorsAccumulator();
+        FinancialIndicatorsAccumulator undefined =
+                new FinancialIndicatorsAccumulator();
+        Map<Long, FinancialIndicatorsAccumulator> byService =
+                new LinkedHashMap<>();
+        for (Operation operation : operations) {
+            // 1. Alimenter les indicateurs globaux
+            accumulate(global, operation);
+            // 2. Identifier les services associés
+            Set<ExternalService> services =
+                    operation.getExternalServices();
+            if (services == null || services.size() != 1) {
+                accumulate(undefined, operation);
+                continue;
+            }
+            // 3. Agréger par service unique
+            ExternalService service =
+                    services.iterator().next();
+            FinancialIndicatorsAccumulator target =
+                    byService.computeIfAbsent(
+                            service.getId(),
+                            key -> new FinancialIndicatorsAccumulator()
+                    );
+            accumulate(target, operation);
+        }
+        MovementBlock block = new MovementBlock();
+        applyIndicators(block, global.toIndicators());
+        block.setUndefinedExternalService(
+                undefined.toIndicators()
+        );
+        block.setExternalServices(
+                buildExternalServiceAggregates(byService)
+        );
+        return block;
+    }
+}
+
+Dans ce mapper, accumulate, applyIndicators et buildExternalServiceAggregates restent à implémenter. Le constructeur et les setters exacts de ExternalServiceAggregate sont nécessaires pour finaliser ce code.
+
+5. Calcul des montants et des types d’opérations
+
+Les champs visibles dans Indicators.java sont :
+
+Type	Montant net	Montant brut	Nombre d’items
+ADD	netAmountAdd	grossAmountAdd	nbItemAdd
+CAN	netAmountCan	grossAmountCan	nbItemCan
+REG	netAmountReg	grossAmountReg	nbItemReg
+Promotion	promotionAmount	—	—
+
+Pour les promotions, la description visible indique :
+
+\text{promotionAmount}
+
+\text{Promotion ADD}
+
+\text{Promotion CAN}
+
+Il faudra vérifier les champs financiers existants de Operation et la signification exacte de nbItems avant d’écrire accumulate().
+
+6. Tests à prévoir
+
+Les scénarios principaux pour FinancialReportFeatureSpec.groovy sont :
+
+* Validation des paramètres obligatoires et des formats de dates.
+* Recherche par creationDate, avec contrôle des bornes.
+* Aucune opération trouvée.
+* Une opération avec un seul ExternalService.
+* Une opération sans ExternalService.
+* Une opération avec plusieurs ExternalService.
+* Plusieurs opérations du même service.
+* Plusieurs services distincts.
+* Agrégation des opérations ADD, CAN, REG.
+* Vérification des totaux globaux et des promotions.
+* Vérification qu’une opération ne contribue qu’à un seul groupe de services.
+
+Pour terminer l’implémentation réelle
+
+Je dispose des signatures et de plusieurs champs visibles dans tes captures, mais pas des méthodes complètes des classes. Je ne veux pas inventer les associations JPA, les constantes métier ou les formules financières.
+
+Envoie-moi le code de OperationRepositoryImpl.java et de OperationService.java, en priorité.
+
+Avec ces deux classes, ainsi que les captures déjà partagées, nous pourrons raccorder le DAO et le service à generateFinancialReport() en respectant les conventions existantes. Ensuite, il faudra les définitions complètes de ExternalServiceAggregate, FinancialReport et les champs financiers de Operation pour finaliser le mapper avec du code compilable.
