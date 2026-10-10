@@ -1,0 +1,416 @@
+Pour ton projet Java (RTL-1440), voici une méthode qui convertit une date au format yyyy-MM-dd et une timezone en OffsetDateTime.
+
+1. Méthode de conversion
+
+public static OffsetDateTime toOffsetDateTime(
+        String date,
+        String timezone) {
+    LocalDate localDate = LocalDate.parse(
+            date, DateTimeFormatter.ISO_LOCAL_DATE);
+    ZoneId zoneId = ZoneId.of(timezone);
+    return localDate.atStartOfDay(zoneId)
+            .toOffsetDateTime();
+}
+
+2. Exemple d’utilisation
+
+OffsetDateTime result = toOffsetDateTime(
+        "2026-10-10",
+        "Europe/Paris"
+);
+
+Résultat :
+
+2026-10-10T00:00+02:00
+
+3. Pour fromDate et toDate
+
+Pour ton rapport financier, je recommande d’utiliser un intervalle avec une borne supérieure exclusive :
+
+public static OffsetDateTime toStartOfDay(
+        String date,
+        String timezone) {
+    return LocalDate.parse(date)
+            .atStartOfDay(ZoneId.of(timezone))
+            .toOffsetDateTime();
+}
+public static OffsetDateTime toStartOfNextDay(
+        String date,
+        String timezone) {
+    return LocalDate.parse(date)
+            .plusDays(1)
+            .atStartOfDay(ZoneId.of(timezone))
+            .toOffsetDateTime();
+}
+
+Utilisation dans QueryDSL :
+
+OffsetDateTime fromDate = toStartOfDay(
+        "2026-10-01", "Europe/Paris");
+OffsetDateTime toDate = toStartOfNextDay(
+        "2026-10-10", "Europe/Paris");
+query.where(
+        operation.creationDate.goe(fromDate)
+                .and(operation.creationDate.lt(toDate))
+);
+
+Avantage : toutes les opérations du 10 octobre sont incluses, quelle que soit leur heure de création.
+
+Cette approche gère également automatiquement les changements d’heure été/hiver grâce à ZoneId, contrairement à un offset fixe comme +02:00.
+
+
+
+
+
+
+
+
+
+-------------hhhhhhhhhhh--------
+
+
+
+
+
+Voici les modifications à faire fichier par fichier pour RTL-1440, en conservant l’architecture existante de ton projet Java/Spring/QueryDSL.
+
+L’objectif est d’implémenter les rapports RESELLER, OPERATOR et TERMINAL, avec une logique commune pour les opérations, les services externes et les indicateurs financiers.
+
+1. OperationRepositoryCustom.java
+
+Modification : déclarer une méthode commune de récupération des opérations pour les trois rapports.
+
+List<Operation> findOperationsForFinancialReport(
+        FinancialReportScope scope,
+        String externalId,
+        OffsetDateTime fromDate,
+        OffsetDateTime toDate);
+
+Créer également l’énumération FinancialReportScope :
+
+public enum FinancialReportScope {
+    RESELLER,
+    OPERATOR,
+    TERMINAL
+}
+
+Cette méthode doit permettre de récupérer toutes les opérations correspondant au périmètre demandé, sans les dupliquer.
+
+2. OperationRepositoryImpl.java
+
+C’est le fichier qui contient les modifications les plus importantes.
+
+A. Généraliser le filtrage des dates
+
+Ajouter une méthode privée commune :
+
+private BooleanExpression creationDatePredicate(
+        QOperation operation,
+        OffsetDateTime fromDate,
+        OffsetDateTime toDate) {
+    BooleanExpression predicate = null;
+    if (fromDate != null) {
+        predicate = operation.creationDate.goe(fromDate);
+    }
+    if (toDate != null) {
+        BooleanExpression upperBound =
+                operation.creationDate.lt(toDate);
+        predicate = predicate == null
+                ? upperBound
+                : predicate.and(upperBound);
+    }
+    return predicate;
+}
+
+La borne supérieure est ici exclusive. Elle devra correspondre à la règle du ticket.
+
+B. Implémenter le filtrage RESELLER
+
+private BooleanExpression resellerPredicate(
+        QOperation operation,
+        String externalId) {
+    return operation.reseller.externalId.eq(externalId);
+}
+
+C. Implémenter OPERATOR et TERMINAL
+
+Ajouter deux méthodes privées :
+
+private BooleanExpression operatorPredicate(
+        QOperation operation,
+        String externalId) {
+    // Reprendre le chemin de relation existant
+    // entre Operation et Operator.
+    throw new UnsupportedOperationException(
+            "Operator predicate to implement");
+}
+private BooleanExpression terminalPredicate(
+        QOperation operation,
+        String externalId) {
+    // Reprendre le chemin de relation existant
+    // entre Operation et Terminal.
+    throw new UnsupportedOperationException(
+            "Terminal predicate to implement");
+}
+
+Ces deux méthodes ne sont pas encore implémentées : les captures ne permettent pas de confirmer les associations JPA exactes.
+
+D. Ajouter la requête commune
+
+@Override
+public List<Operation> findOperationsForFinancialReport(
+        FinancialReportScope scope,
+        String externalId,
+        OffsetDateTime fromDate,
+        OffsetDateTime toDate) {
+    QOperation operation = QOperation.operation;
+    BooleanExpression scopePredicate = switch (scope) {
+        case RESELLER ->
+                resellerPredicate(operation, externalId);
+        case OPERATOR ->
+                operatorPredicate(operation, externalId);
+        case TERMINAL ->
+                terminalPredicate(operation, externalId);
+    };
+    return new JPAQuery<Operation>(entityManager)
+            .select(operation)
+            .from(operation)
+            .where(
+                    scopePredicate,
+                    creationDatePredicate(
+                            operation, fromDate, toDate))
+            .fetch();
+}
+
+À conserver : les filtres existants sur les statuts, types d’opérations et actions applicables au rapport. Il ne faut pas remplacer les requêtes actuelles sans reprendre ces règles métier.
+
+3. FinancialReportAggregator.java — Nouveau fichier
+
+Objectif : centraliser la répartition des opérations entre les services mono-produit et undefinedExternalService.
+
+public class FinancialReportAggregator {
+    public Map<Long, List<Operation>> groupByExternalService(
+            List<Operation> operations) {
+        Map<Long, List<Operation>> result =
+                new HashMap<>();
+        for (Operation operation : operations) {
+            Set<ExternalService> services =
+                    operation.getExternalServices();
+            if (services == null || services.size() != 1) {
+                continue;
+            }
+            ExternalService service =
+                    services.iterator().next();
+            result.computeIfAbsent(
+                    service.getId(),
+                    id -> new ArrayList<>()
+            ).add(operation);
+        }
+        return result;
+    }
+    public List<Operation> findUndefinedOperations(
+            List<Operation> operations) {
+        return operations.stream()
+                .filter(operation -> {
+                    Set<ExternalService> services =
+                            operation.getExternalServices();
+                    return services == null
+                            || services.size() != 1;
+                })
+                .toList();
+    }
+}
+
+Ces deux méthodes constituent la classification commune pour les trois rapports.
+
+Les opérations avec exactement un externalService sont regroupées par identifiant de service. Les autres alimentent le groupe indéfini.
+
+4. OperationIndicatorsCalculator.java — Nouveau fichier
+
+Objectif : calculer les indicateurs financiers d’une opération en réutilisant les règles métier existantes.
+
+Prévoir une méthode :
+
+public Indicators calculate(Operation operation) {
+    // Réutiliser les règles financières existantes :
+    // ADD, CAN, REG, montants nets et bruts,
+    // nombre d'items et promotion.
+    throw new UnsupportedOperationException(
+            "Financial calculation to implement");
+}
+
+Il ne faut pas supposer que ADD, CAN et REG correspondent directement aux constantes de OperationActionTypeCode.
+
+Les calculs devront reprendre les méthodes existantes du projet, notamment celles utilisées par les rapports financiers actuels.
+
+5. IndicatorsAccumulator.java — Nouveau fichier
+
+Objectif : additionner les indicateurs sans répéter le calcul dans chaque rapport.
+
+Prévoir :
+
+public class IndicatorsAccumulator {
+    public void add(Indicators indicators) {
+        // Cumuler tous les indicateurs ADD/CAN/REG
+        // et les montants promotionnels.
+    }
+    public Indicators toIndicators() {
+        // Construire le résultat cumulé.
+        throw new UnsupportedOperationException(
+                "Accumulator mapping to implement");
+    }
+}
+
+Il faudra respecter les types exacts des propriétés de Indicators : Long, Integer, BigDecimal ou autres types définis dans ton projet.
+
+6. OperationReportService.java
+
+Modification : ajouter une méthode commune utilisée par les trois rapports.
+
+public FinancialReport getFinancialReport(
+        FinancialReportScope scope,
+        String externalId,
+        OffsetDateTime fromDate,
+        OffsetDateTime toDate) {
+    List<Operation> operations =
+            operationRepository
+                    .findOperationsForFinancialReport(
+                            scope,
+                            externalId,
+                            fromDate,
+                            toDate);
+    return financialReportMapper.toFinancialReport(
+            operations);
+}
+
+Cette méthode suppose l’ajout du mapping décrit ci-dessous.
+
+Important : les contrôles d’autorisation propres à RESELLER, OPERATOR et TERMINAL doivent rester exécutés avant la récupération des données.
+
+7. OperationReportMapper.java
+
+Modification : ajouter le mapping commun des opérations vers le rapport financier.
+
+La méthode doit :
+
+* Calculer les indicateurs globaux sur toutes les opérations.
+* Regrouper les opérations mono-produit par externalService.
+* Calculer les indicateurs de chaque groupe.
+* Cumuler les opérations sans service ou multi-services dans undefinedExternalService.
+* Construire le MovementBlock et le FinancialReport.
+
+Signature proposée :
+
+public FinancialReport toFinancialReport(
+        List<Operation> operations);
+
+La construction doit utiliser les modèles existants :
+
+MovementBlock movementBlock = new MovementBlock();
+movementBlock.setExternalServices(
+        externalServiceAggregates);
+movementBlock.setUndefinedExternalService(
+        undefinedIndicators);
+
+Les indicateurs globaux doivent aussi être renseignés dans MovementBlock.
+
+8. OperationFeatureImpl.java
+
+Modification : réutiliser les validations existantes et déléguer au service.
+
+Les trois chemins métier doivent appeler le traitement commun avec leur périmètre respectif :
+
+// RESELLER
+operationReportService.getFinancialReport(
+        FinancialReportScope.RESELLER,
+        externalId,
+        fromDate,
+        toDate);
+// OPERATOR
+operationReportService.getFinancialReport(
+        FinancialReportScope.OPERATOR,
+        externalId,
+        fromDate,
+        toDate);
+// TERMINAL
+operationReportService.getFinancialReport(
+        FinancialReportScope.TERMINAL,
+        externalId,
+        fromDate,
+        toDate);
+
+Ces appels sont à intégrer dans les méthodes existantes, pas à ajouter comme instructions isolées.
+
+Conserver les validations externalId, date, fromDate, toDate et les contrôles d’accès.
+
+9. MovementBlock.java, Indicators.java et ExternalServiceAggregate.java
+
+Aucune modification structurelle nécessaire a priori.
+
+On réutilise :
+
+private List<ExternalServiceAggregate> externalServices;
+private Indicators undefinedExternalService;
+
+Ainsi que les indicateurs financiers existants.
+
+Il faudra simplement vérifier les setters et la structure exacte de ExternalServiceAggregate pour compléter le mapper.
+
+10. FinancialReportFeatureSpec.groovy
+
+Ajouter les tests fonctionnels suivants :
+
+Test	Reseller	Operator	Terminal
+Filtrage sur creationDate	✓	✓	✓
+Identifiant valide et invalide	✓	✓	✓
+Opération avec un service	✓	✓	✓
+Opération sans service	✓	✓	✓
+Opération avec plusieurs services	✓	✓	✓
+Regroupement par service	✓	✓	✓
+Agrégation ADD/CAN/REG	✓	✓	✓
+Montants nets et bruts	✓	✓	✓
+Promotions	✓	✓	✓
+Permissions	✓	✓	✓
+Absence d’opérations	✓	✓	✓
+
+Il faudra également vérifier que :
+
+\text{Total global} =
+\sum \text{Indicateurs par service}
+
+* \text{Indicateurs undefined}
+
+Cette égalité doit être vérifiée indicateur par indicateur.
+
+Récapitulatif
+
+Checklist des modifications
+
+À cocher pendant le développement
+
+OperationRepositoryCustom.java
+
+OperationRepositoryImpl.java
+
+FinancialReportScope.java
+
+FinancialReportAggregator.java
+
+OperationIndicatorsCalculator.java
+
+IndicatorsAccumulator.java
+
+OperationReportService.java
+
+OperationReportMapper.java
+
+OperationFeatureImpl.java
+
+FinancialReportFeatureSpec.groovy
+
+0 / 10 fichiers traités
+
+Mon conseil pour ton projet : commence par OperationRepositoryImpl.java, puis OperationReportService.java, et termine par le mapper et les tests. Évite de remplacer les méthodes QueryDSL existantes si elles sont utilisées par d’autres rapports.
+
+Les extraits ci-dessus forment un plan d’implémentation, pas encore un patch compilable : les chemins Operator/Terminal, les calculs financiers et certains mappings doivent être raccordés aux classes réelles.
+
