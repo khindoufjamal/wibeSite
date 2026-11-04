@@ -1,0 +1,945 @@
+Guide technique complet — RTL-1463
+
+Projet RTL · Java / Maven · GitLab CI · Trivy · Migration Quarkus à venir
+
+L’objectif est que tu puisses avancer sur les tickets Jira de manière autonome, depuis l’analyse du projet jusqu’à la création des Merge Requests, en sachant précisément quelles commandes exécuter, quels fichiers modifier et comment vérifier tes corrections.
+
+Je pars de ton rapport Trivy et surtout des dernières consignes de Shien-Haur.
+
+1. La stratégie validée avec Shien-Haur
+
+Son instruction change la manière d’aborder le chantier :
+
+Procéder par ce qui est le plus simple en premier : toutes les versions patch, puis les versions mineures, puis ZooKeeper et Hazelcast aussi loin que possible sans toucher au middleware. Les CVE restantes pourront être traitées dans le cadre de la migration Quarkus.
+
+Cela signifie qu’on ne cherche pas à faire disparaître les 76 vulnérabilités à n’importe quel prix.
+
+Ordre opérationnel
+
+* RTL-1452 — Correctifs patch
+    Passer de X.Y.Z à X.Y.Z+n quand cela corrige des CVE sans changer de génération.
+* RTL-1455 — Correctifs mineurs
+    Passer de X.Y à X.Y+n, après contrôle de compatibilité.
+* RTL-1453 — ZooKeeper
+    Évaluer la version compatible avec le cluster et le middleware existants.
+* RTL-1454 — Hazelcast
+    Vérifier jusqu’où monter sans migration de cluster ni changement majeur non maîtrisé.
+
+Règles de décision
+
+Situation	Décision
+Patch compatible et tests OK	Corriger
+Mineure compatible et tests OK	Corriger
+Mise à jour provoquant des erreurs de compilation	Analyser puis ajuster dans le périmètre prévu
+Migration majeure nécessitant Java/Jakarta/Quarkus	Différer et documenter
+Modification du middleware obligatoire	Ne pas engager sans validation de Shien-Haur
+CVE sans correctif compatible	Documenter le risque et le report
+
+Attention : la consigne autorise un report technique, pas l’acceptation automatique du risque de sécurité. Les vulnérabilités critiques restantes devront être remontées et faire l’objet de la validation sécurité habituelle.
+
+2. Ce que tu sais déjà
+
+D’après les captures du pipeline :
+
+TOTAL
+
+76
+
+CRITICAL
+
+8
+
+HIGH
+
+68
+
+Le rapport analysé correspond à :
+
+rtl-core/rtl-application-web/pom.xml
+
+Le chiffre de 76 est celui du rapport de référence ; ce n’est pas forcément le résultat d’un scan lancé aujourd’hui.
+
+Tu dois commencer par récupérer la version exacte du dépôt, le rapport initial et la configuration du build, puis constituer une baseline reproductible.
+
+Phase 1 — Préparation de l’environnement
+
+Étape 1 : se placer dans le projet
+
+Dans le terminal IntelliJ ou un terminal macOS :
+
+# Se placer à la racine du dépôt
+cd /chemin/vers/rtl
+# Vérifier le dépôt
+pwd
+git status
+git branch --show-current
+# Vérifier les outils
+java -version
+mvn -version
+git --version
+# Vérifier si Maven Wrapper est disponible
+ls -la mvnw .mvn 2>/dev/null
+
+Si le projet fournit ./mvnw, utilise-le de préférence à mvn pour reprendre la version Maven prévue par l’équipe.
+
+Vérifie également la version Java réellement utilisée dans GitLab CI. Une compilation locale avec Java 21 peut fonctionner alors que le pipeline utilise Java 17, ou inversement.
+
+Étape 2 : créer la branche de travail
+
+Commence avec RTL-1452, en te basant sur la branche de référence de ton équipe (par exemple develop, à confirmer).
+
+git fetch origin
+# Exemple si la branche de référence est develop
+git switch develop
+git pull --ff-only origin develop
+# Créer une branche dédiée
+git switch -c fix/RTL-1452-dependencies-patch
+
+Ne mélange pas les modifications des quatre sous-tâches dans un même commit.
+
+Étape 3 : vérifier que le projet compile avant modification
+
+Depuis la racine du reactor Maven :
+
+mvn -pl rtl-core/rtl-application-web -am \
+  clean verify 2>&1 | tee /tmp/rtl-baseline-build.log
+
+Avec cette commande :
+
+* -pl sélectionne le module.
+* -am construit également les modules du reactor nécessaires.
+* clean supprime les anciens résultats de compilation.
+* verify exécute les phases prévues par le cycle Maven, dont les tests configurés.
+* tee conserve le log pour analyse.
+
+Sur macOS, si tu veux que la commande retourne bien l’échec Maven même lorsqu’elle est suivie de tee, exécute set -o pipefail avant la commande.
+
+Résultat attendu : BUILD SUCCESS.
+
+Si le build échoue avant toute modification, il faut isoler la cause : configuration Maven, dépôts internes, tests, profils, variables d’environnement ou état initial du code.
+
+Phase 2 — Analyse des dépendances Maven
+
+C’est la phase la plus importante. Avant de modifier une version, tu dois comprendre d’où elle vient.
+
+Étape 4 : générer le dependency tree
+
+Depuis la racine :
+
+mkdir -p /tmp/rtl-audit
+mvn -pl rtl-core/rtl-application-web \
+  dependency:tree \
+  -DoutputType=text \
+  -DoutputFile=/tmp/rtl-audit/dependencies-before.txt
+
+Ce fichier permettra de voir les dépendances directes et transitives réellement résolues par Maven. Apache Maven Dependency Plugin
+
+Exemple fictif :
+
+rtl-application-web
+ +- com.example:legacy-client:jar:1.0
+ |  \- com.fasterxml.jackson.core:jackson-databind:jar:2.18.3
+ +- org.postgresql:postgresql:jar:42.7.10
+ \- io.netty:netty-handler:jar:4.1.x
+
+Dans cet exemple :
+
+* PostgreSQL est déclaré directement.
+* Jackson vient d’une autre librairie.
+* Netty peut être direct ou transitif selon la déclaration réelle.
+
+Le traitement sera différent pour chaque cas.
+
+Étape 5 : filtrer les librairies signalées par Trivy
+
+Voici les commandes utiles pour ton ticket.
+
+Jackson
+
+mvn -pl rtl-core/rtl-application-web \
+  dependency:tree \
+  -Dincludes=com.fasterxml.jackson.core:*
+
+Hazelcast
+
+mvn -pl rtl-core/rtl-application-web \
+  dependency:tree \
+  -Dincludes=com.hazelcast:*
+
+ZooKeeper
+
+mvn -pl rtl-core/rtl-application-web \
+  dependency:tree \
+  -Dincludes=org.apache.zookeeper:*
+
+Spring
+
+mvn -pl rtl-core/rtl-application-web \
+  dependency:tree \
+  -Dincludes=org.springframework:*,org.springframework.kafka:*,org.springframework.data:*
+
+Netty
+
+mvn -pl rtl-core/rtl-application-web \
+  dependency:tree \
+  -Dincludes=io.netty:*
+
+PostgreSQL
+
+mvn -pl rtl-core/rtl-application-web \
+  dependency:tree \
+  -Dincludes=org.postgresql:postgresql
+
+Si une commande ne renvoie rien, vérifie le module sélectionné et les profils Maven. La librairie peut être présente ailleurs dans le reactor ou dans un artefact qui n’est pas couvert par ce module.
+
+Étape 6 : retrouver l’origine des versions
+
+Génère le POM effectif, incluant l’héritage du parent, les profils actifs et les versions gérées :
+
+mvn -pl rtl-core/rtl-application-web \
+  help:effective-pom \
+  -Dverbose \
+  -Doutput=/tmp/rtl-audit/effective-pom.xml
+
+Le mode verbose permet de repérer l’origine des éléments dans le POM lorsque le plugin le prend en charge. Apache Maven Help Plugin
+
+Puis recherche les librairies :
+
+grep -n -E \
+  'jackson|postgresql|hazelcast|zookeeper|netty|spring|quarkus' \
+  /tmp/rtl-audit/effective-pom.xml
+
+Pour chaque dépendance, note le mode de gestion :
+
+Origine de la version	Action
+Propriété <xxx.version>	Modifier la propriété concernée
+ parent	Modifier l’entrée centralisée
+BOM importé	Vérifier s’il faut monter le BOM
+Version dans la dépendance locale	Modifier dans le POM du module
+Dépendance transitive	Mettre à jour le parent responsable, sinon gérer explicitement après analyse
+
+Règle Maven : ne commence pas par ajouter des versions partout dans les POM. Cela peut neutraliser la gestion centralisée et introduire des incompatibilités.
+
+Phase 3 — RTL-1452 : monter toutes les versions patch
+
+C’est ton premier ticket à développer.
+
+Étape 7 : identifier les patchs disponibles
+
+Un patch correspond, dans la convention habituelle MAJOR.MINOR.PATCH, à une modification du dernier numéro.
+
+Exemples :
+
+* 42.7.10 → 42.7.12 : patch.
+* 2.18.3 → 2.18.11 : patch.
+* 1.1.10.7 → 1.1.10.9 : révision dans la même branche.
+* 3.5.7 → 3.6.12 : changement mineur.
+* 4.2.8 → 5.7.0 : changement majeur.
+
+Attention : toutes les librairies ne suivent pas parfaitement SemVer.
+
+Commande pour afficher les patchs Maven
+
+mvn -pl rtl-core/rtl-application-web \
+  versions:display-dependency-updates \
+  -DallowMajorUpdates=false \
+  -DallowMinorUpdates=false
+
+Cette commande affiche les mises à jour compatibles avec les contraintes de segments de version du plugin. Elle ne modifie pas les POM. Versions Maven Plugin
+
+Si les versions sont gérées par des propriétés :
+
+mvn -pl rtl-core/rtl-application-web \
+  versions:display-property-updates \
+  -DallowMajorUpdates=false \
+  -DallowMinorUpdates=false
+
+Garde les résultats du diagnostic dans un fichier de travail.
+
+Tableau de corrections candidates pour RTL-1452
+
+À partir des captures de ton rapport :
+
+Dépendance	Actuelle	Candidat à vérifier	Priorité
+org.postgresql:postgresql	42.7.10	42.7.12	Haute
+jackson-core	2.18.3	2.18.11*	Haute
+jackson-databind	À confirmer	Aligner Jackson	Haute
+snappy-java	1.1.10.7	1.1.10.9	Haute
+io.netty:netty-codec	4.1.63.Final	4.1.68.Final*	Haute
+io.netty:netty-handler	À confirmer	Patch corrigé de sa branche	Haute
+
+*Ce sont des valeurs lues dans le rapport Trivy pour certaines vulnérabilités, pas nécessairement la meilleure version finale. Netty 4.1.68.Final, notamment, ne couvre pas toutes les CVE plus récentes visibles sur tes captures. Vérifie chaque cible contre l’ensemble des CVE de la dépendance avant de la retenir.
+
+Étape 8 : choisir les versions à appliquer
+
+Pour chaque librairie :
+
+* Identifier la version Maven réellement résolue.
+* Chercher les patchs disponibles dans la même branche.
+* Vérifier le correctif dans les release notes et le rapport de sécurité.
+* Choisir la version compatible qui corrige le plus de CVE.
+* Vérifier que le dépôt Maven interne de l’entreprise dispose de cette version.
+
+Pour confirmer qu’un artefact existe dans les dépôts Maven configurés :
+
+mvn dependency:get \
+  -Dartifact=org.postgresql:postgresql:42.7.12 \
+  -Dtransitive=false
+
+Si le téléchargement échoue, cela peut provenir d’une version indisponible, de Nexus/Artifactory, de droits insuffisants ou d’une configuration Maven défaillante.
+
+Exemple pratique : PostgreSQL
+
+Si le POM contient :
+
+<properties>
+    <postgresql.version>42.7.10</postgresql.version>
+</properties>
+
+Tu modifies uniquement :
+
+<properties>
+    <postgresql.version>42.7.12</postgresql.version>
+</properties>
+
+Si la version est directement dans la déclaration <dependency>, modifie cette déclaration au lieu de créer une propriété inutile.
+
+Ensuite :
+
+# Vérifier la version résolue
+mvn -pl rtl-core/rtl-application-web \
+  dependency:tree \
+  -Dincludes=org.postgresql:postgresql
+# Reconstruire l'application
+mvn -pl rtl-core/rtl-application-web -am \
+  clean verify
+
+Tu dois constater que la version résolue est bien celle attendue. Le changement du texte du POM ne suffit pas.
+
+Étape 9 : traiter les dépendances transitives
+
+Prenons un exemple fictif :
+
+rtl-application-web
+  └── client-service:2.0
+       └── io.netty:netty-handler:4.1.63.Final
+
+Si Netty arrive par client-service, tu as trois possibilités.
+
+Option 1 — Mettre à jour la bibliothèque parente. C’est généralement le meilleur choix lorsque la nouvelle version de client-service gère un Netty corrigé.
+
+Option 2 — Mettre à jour le BOM. Si tous les modules Netty sont gérés par un BOM, privilégie l’alignement global.
+
+Option 3 — Forcer une version corrigée. À réserver aux cas où la compatibilité est établie.
+
+Exemple de dependencyManagement pour imposer la version d’un artefact :
+
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-handler</artifactId>
+            <version>${netty.version}</version>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+Cela ne suffit pas à aligner automatiquement tous les composants Netty : il faut vérifier l’ensemble du graphe et, si nécessaire, utiliser le BOM Netty correspondant.
+
+N’ajoute pas d’exclusion transitive sans avoir identifié précisément pourquoi elle est nécessaire. Une exclusion incorrecte peut supprimer une bibliothèque utilisée à l’exécution.
+
+Étape 10 : valider le ticket RTL-1452
+
+Après un premier groupe de corrections :
+
+# Exécuter les tests
+mvn -pl rtl-core/rtl-application-web -am \
+  clean verify
+# Vérifier les modifications
+git diff --check
+git diff -- pom.xml ':(glob)**/pom.xml'
+# Vérifier l'état du dépôt
+git status --short
+
+Si une mise à jour casse le build, ne corrige pas simultanément dix autres dépendances. Reviens au dernier état valide, identifie la librairie responsable et traite-la isolément.
+
+Le ticket RTL-1452 pourra être considéré comme techniquement prêt lorsque :
+
+* Tous les patchs possibles dans le périmètre validé ont été évalués.
+* Les patchs retenus sont appliqués.
+* Les dépendances Maven résolues sont correctes.
+* Le build et les tests passent.
+* Le nouveau rapport Trivy est comparé à la baseline.
+* Les patchs impossibles sont documentés avec leur justification.
+
+Phase 4 — RTL-1455 : monter les versions mineures
+
+Après la validation des patchs, passe aux mineures.
+
+Étape 11 : identifier les mineures disponibles
+
+mvn -pl rtl-core/rtl-application-web \
+  versions:display-dependency-updates \
+  -DallowMajorUpdates=false \
+  -DallowMinorUpdates=true
+
+Pour les propriétés :
+
+mvn -pl rtl-core/rtl-application-web \
+  versions:display-property-updates \
+  -DallowMajorUpdates=false \
+  -DallowMinorUpdates=true
+
+La sortie inclura aussi des patchs. Tu devras distinguer manuellement les véritables changements mineurs.
+
+Dépendances candidates
+
+Dépendance	Version lue	Action recommandée
+Nimbus JOSE JWT	9.31	Évaluer une mineure compatible
+Apache CXF	3.5.7	Évaluer une version corrigée de la branche 3.x
+Kafka Clients	3.2.3	Vérifier la compatibilité avec les brokers
+XStream	1.3.1	Migration à isoler, risque élevé
+Guava	19.0	Évaluer une cible compatible avec Java
+Spring Kafka	2.9.13	Aligner avec la génération Spring
+Spring Data Commons	2.4.6	Vérifier la compatibilité des composants Spring
+
+Il ne faut pas considérer automatiquement toutes ces mises à jour comme mineures : certaines nécessitent de franchir plusieurs générations ou de changer de framework.
+
+Exemple : Kafka Clients
+
+Avant de modifier kafka-clients, identifie :
+
+* La version des brokers Kafka.
+* La version de Spring Kafka.
+* Le mode d’authentification SASL/SSL.
+* Les serializers et deserializers utilisés.
+* Les options producteur et consommateur.
+
+Après modification, vérifie les échanges réels :
+
+* Production d’un message.
+* Consommation.
+* Commit des offsets.
+* Gestion des erreurs.
+* Reconnexion au broker.
+* Compatibilité de la sérialisation.
+
+Une compilation réussie ne prouve pas que la connexion au Kafka de l’environnement fonctionne encore.
+
+Point sensible : Spring
+
+Ne monte pas spring-core indépendamment du reste des composants Spring. Une version de spring-web, spring-expression ou spring-data-commons incompatible peut provoquer des erreurs NoSuchMethodError, ClassNotFoundException ou des échecs au démarrage.
+
+Si la seule correction disponible impose une migration Jakarta ou une nouvelle génération Java, conserve ce changement pour le chantier de migration Quarkus, sous réserve de l’arbitrage sécurité.
+
+Phase 5 — RTL-1453 : ZooKeeper
+
+Étape 12 : déterminer le rôle de ZooKeeper
+
+Ton rapport affiche :
+
+Élément	Valeur
+Artifact	org.apache.zookeeper:zookeeper
+Version actuelle	3.6.3
+Vulnérabilité critique	CVE-2023-44981
+Versions corrigées mentionnées	3.7.2, 3.8.3, 3.9.1
+
+Ces versions sont celles indiquées pour cette CVE dans la capture, et non une recommandation de déploiement.
+
+Première commande
+
+mvn -pl rtl-core/rtl-application-web \
+  dependency:tree \
+  -Dincludes=org.apache.zookeeper:*,org.apache.curator:*
+
+Cherche ensuite les usages côté application :
+
+grep -R -n -E \
+  'ZooKeeper|CuratorFramework|ZKClient|zookeeper.connect' \
+  --include="*.java" \
+  --include="*.xml" \
+  --include="*.properties" \
+  --include="*.yaml" \
+  .
+
+Si la dépendance est seulement utilisée côté client, tu pourras éventuellement monter la bibliothèque cliente sans modifier les serveurs.
+
+Si elle pilote un Zookeeper embarqué ou fait partie du middleware, le risque est plus important.
+
+Plan d’action
+
+* Déterminer si ZooKeeper est direct ou transitif.
+* Relever la version du serveur sur l’environnement de recette.
+* Vérifier la compatibilité du client avec cette version serveur.
+* Choisir une version corrigée supportée.
+* Modifier la gestion Maven.
+* Compiler et tester les connexions.
+* Vérifier les logs au démarrage.
+* Valider la reconnexion après interruption.
+
+Si la mise à jour nécessite d’intervenir sur les serveurs, arrête le changement à la frontière convenue avec Shien-Haur et documente les limitations.
+
+Phase 6 — RTL-1454 : Hazelcast
+
+Étape 13 : analyser Hazelcast avant toute montée
+
+C’est probablement la partie la plus sensible au niveau du middleware.
+
+Élément	Valeur
+Artifact	com.hazelcast:hazelcast
+Version actuelle	4.2.8
+CVE critique visible	CVE-2026-107726
+Version corrigée affichée	5.7.0
+
+Le passage de Hazelcast 4.2.8 vers 5.7.0 est majeur. Il ne faut donc pas l’appliquer automatiquement, surtout après les consignes de Shien-Haur.
+
+Commandes de diagnostic
+
+mvn -pl rtl-core/rtl-application-web \
+  dependency:tree \
+  -Dincludes=com.hazelcast:*
+
+Pour identifier les usages :
+
+grep -R -n -E \
+  'HazelcastInstance|HazelcastClient|IMap|IQueue|EntryProcessor|hazelcast' \
+  --include="*.java" \
+  --include="*.xml" \
+  --include="*.yaml" \
+  --include="*.properties" \
+  .
+
+Ce qu’il faut déterminer
+
+* Le projet embarque-t-il un membre Hazelcast ou se connecte-t-il comme client ?
+* Le cluster est-il partagé avec d’autres applications ?
+* Est-ce que les instances RTL partagent le même cache ?
+* La configuration est-elle XML, YAML ou Java ?
+* Quelle est la version Hazelcast côté infrastructure ?
+* Existe-t-il une version corrigée compatible dans la branche 4.x ?
+
+Si la dernière réponse est non, le ticket peut déboucher sur une analyse de faisabilité et un report justifié, plutôt qu’une modification forcée.
+
+Tests nécessaires si la mise à jour est compatible
+
+* Démarrage de l’application.
+* Connexion au cluster.
+* Lecture et écriture du cache.
+* TTL et expiration.
+* Sérialisation des objets Java.
+* Fonctionnement avec deux instances RTL.
+* Reconnexion après indisponibilité.
+* Absence d’erreur dans les logs.
+
+À ne pas faire : changer le numéro de version Hazelcast dans le POM puis pousser directement vers la recette sans vérifier la compatibilité des membres du cluster.
+
+Phase 7 — Vérifier la réduction des CVE avec Trivy
+
+Étape 14 : conserver le rapport de référence
+
+Le rapport initial est accessible depuis les artifacts du job GitLab transmis par Shien-Haur.
+
+Récupère le fichier trivy-report.txt correspondant au build initial et conserve-le dans ton répertoire d’audit local.
+
+Le tableau à suivre est celui de :
+
+rtl-core/rtl-application-web/pom.xml
+
+Ne compare pas les 76 CVE de ce module au total des vulnérabilités de tous les modules du dépôt, car le résultat serait trompeur.
+
+Étape 15 : relancer Trivy
+
+Le plus fiable est d’utiliser le même scanner, la même configuration, le même périmètre et le même type d’artefact que GitLab CI.
+
+Pour un contrôle local préliminaire :
+
+trivy --version
+trivy fs \
+  --scanners vuln \
+  --severity HIGH,CRITICAL \
+  --format json \
+  --output /tmp/rtl-audit/trivy-after.json \
+  rtl-core/rtl-application-web
+
+La syntaxe trivy fs et le filtre de sévérité sont documentés par Trivy. Trivy
+
+Attention : un scan local du répertoire Maven et un scan du WAR/JAR construit peuvent renvoyer des résultats différents. Le pipeline GitLab reste ta référence de validation.
+
+Extraire les vulnérabilités avec jq
+
+Si tu disposes du rapport JSON :
+
+jq -r '
+  .Results[]?
+  | .Vulnerabilities[]?
+  | [
+      .PkgName,
+      .InstalledVersion,
+      .FixedVersion,
+      .Severity,
+      .VulnerabilityID
+    ]
+  | @tsv
+' /tmp/rtl-audit/trivy-after.json
+
+Tu obtiendras un tableau de ce type :
+
+Package       Installed  Fixed    Severity  CVE
+postgresql    42.7.10    42.7.12 HIGH      CVE-...
+hazelcast     4.2.8      5.7.0   CRITICAL  CVE-...
+zookeeper     3.6.3      3.8.3   CRITICAL  CVE-...
+
+C’est un exemple de structure, pas un nouveau résultat de scan.
+
+Calculer les totaux
+
+jq -r '
+  [.Results[]?.Vulnerabilities[]?]
+  | group_by(.Severity)
+  | .[]
+  | "\(.[0].Severity): \(length)"
+' /tmp/rtl-audit/trivy-after.json
+
+Ne masque pas les vulnérabilités sans correctif : l’option --ignore-unfixed les retirerait de l’affichage, mais ne les corrigerait pas. Trivy
+
+Étape 16 : comparer les rapports avant / après
+
+Le mieux est de sauvegarder deux rapports JSON produits de manière identique :
+
+* trivy-before.json
+* trivy-after.json
+
+Pour lister les identifiants vulnérables initiaux :
+
+jq -r '
+  .Results[]?
+  | .Vulnerabilities[]?
+  | [.PkgName, .VulnerabilityID]
+  | @tsv
+' /tmp/rtl-audit/trivy-before.json \
+  | sort -u > /tmp/rtl-audit/cve-before.txt
+
+Puis les identifiants restants :
+
+jq -r '
+  .Results[]?
+  | .Vulnerabilities[]?
+  | [.PkgName, .VulnerabilityID]
+  | @tsv
+' /tmp/rtl-audit/trivy-after.json \
+  | sort -u > /tmp/rtl-audit/cve-after.txt
+
+Afficher les vulnérabilités disparues :
+
+comm -23 \
+  /tmp/rtl-audit/cve-before.txt \
+  /tmp/rtl-audit/cve-after.txt
+
+Afficher les nouvelles vulnérabilités détectées :
+
+comm -13 \
+  /tmp/rtl-audit/cve-before.txt \
+  /tmp/rtl-audit/cve-after.txt
+
+Cette comparaison donne une première vue pratique. Pour un audit complet, compare aussi les versions, la sévérité, le chemin du module et les changements de base de données Trivy.
+
+Suivi des résultats
+
+Suivi interactif des quatre tickets
+
+RTL-1452 — Patchs
+
+À faire
+
+CRITICAL restantes
+
+HIGH restantes
+
+RTL-1455 — Mineures
+
+À faire
+
+CRITICAL restantes
+
+HIGH restantes
+
+RTL-1453 — ZooKeeper
+
+À faire
+
+CRITICAL restantes
+
+HIGH restantes
+
+RTL-1454 — Hazelcast
+
+À faire
+
+CRITICAL restantes
+
+HIGH restantes
+
+Saisis le total résiduel après chaque étape, sur le même périmètre Trivy. Les valeurs sont à renseigner après exécution réelle du pipeline. Copier le suivi au format CSV
+
+Phase 8 — Tests et résolution des problèmes
+
+Étape 17 : exécuter les tests sans les contourner
+
+Commande principale :
+
+mvn -pl rtl-core/rtl-application-web -am \
+  clean verify
+
+Pour une investigation rapide, tu peux commencer par :
+
+mvn -pl rtl-core/rtl-application-web -am \
+  clean compile
+
+Mais le fait que compile passe ne suffit pas pour valider le ticket.
+
+Si les tests échouent, consulte les rapports :
+
+find . -path '*/surefire-reports/*.txt' \
+  -o -path '*/failsafe-reports/*.txt'
+
+Étape 18 : comprendre les erreurs les plus fréquentes
+
+Erreur	Cause possible	Action
+Could not resolve dependencies	Version absente du repository ou accès impossible	Vérifier artefact, Nexus, settings et credentials
+NoSuchMethodError	Incompatibilité binaire entre JAR	Inspecter le dependency tree et aligner les versions
+ClassNotFoundException	Dépendance absente ou incompatible	Vérifier dépendances transitives et exclusions
+UnsupportedClassVersionError	Version Java incompatible	Vérifier Java local, CI et compilation
+NoClassDefFoundError	Classe absente au runtime	Vérifier le contenu du WAR/JAR et les scopes
+Failed to load ApplicationContext	Incompatibilité Spring ou configuration	Vérifier les versions coordonnées et le premier Caused by
+javax.* / jakarta.*	Migration d’API incompatible	Ne pas forcer une migration majeure hors périmètre
+
+Recherche d’une erreur dans les logs
+
+grep -n -E \
+  'BUILD FAILURE|Caused by:|NoSuchMethodError|ClassNotFoundException|UnsupportedClassVersionError' \
+  /tmp/rtl-baseline-build.log
+
+Ne te contente pas de la dernière ligne de Maven. La cause utile est souvent plus haut, dans le premier Caused by.
+
+Étape 19 : en cas d’échec après une montée
+
+Procédure :
+
+* Identifie la dernière modification Maven.
+* Vérifie que la nouvelle version a bien été résolue.
+* Consulte la première erreur de compilation ou d’exécution.
+* Vérifie les dépendances transitives modifiées.
+* Compare les release notes.
+* Corrige uniquement ce problème si cela reste dans le périmètre.
+* Sinon, annule la mise à jour et documente le blocage.
+
+Pour inspecter l’état des changements :
+
+git diff --check
+git diff --stat
+git diff
+
+Pour annuler seulement un fichier modifié et non encore commité, lorsque tu es certain de ne pas vouloir conserver son contenu :
+
+git restore -- chemin/vers/pom.xml
+
+Évite git reset --hard, qui pourrait faire perdre d’autres modifications locales.
+
+Phase 9 — Commit, Merge Request et Jira
+
+Étape 20 : préparer le commit
+
+Quand le ticket RTL-1452 est testé :
+
+# Vérifier les fichiers modifiés
+git status
+# Vérifier les différences
+git diff --check
+git diff --stat
+# Ajouter seulement les POM concernés
+git add chemin/vers/pom.xml
+# Créer le commit
+git commit -m "RTL-1452: upgrade vulnerable dependencies to compatible patch versions"
+# Pousser la branche
+git push -u origin fix/RTL-1452-dependencies-patch
+
+Remplace chemin/vers/pom.xml par le chemin réel de chaque POM modifié. Ne commite pas automatiquement les logs, rapports temporaires ou fichiers contenant des informations internes sensibles.
+
+Ensuite, ouvre une MR GitLab vers la branche cible de l’équipe.
+
+Étape 21 : rédiger la Merge Request
+
+RTL-1452 — Montée de versions patch des dépendances vulnérables
+
+Contexte
+
+Mise à jour des dépendances Maven signalées par le rapport Trivy, en privilégiant les corrections patch compatibles avec l’architecture actuelle de RTL.
+
+Modifications réalisées
+
+* Dépendances mises à jour : [à compléter]
+* Versions initiales et nouvelles versions : [à compléter]
+* Fichiers POM modifiés : [à compléter]
+
+Validation
+
+* Build Maven : [résultat]
+* Tests unitaires : [résultat]
+* Tests d’intégration : [résultat]
+* Vérification dependency tree : [résultat]
+* Pipeline GitLab : [résultat]
+
+Analyse Trivy
+
+* CRITICAL avant : [nombre]
+* CRITICAL après : [nombre]
+* HIGH avant : [nombre]
+* HIGH après : [nombre]
+
+Limites et points d’attention
+
+Les dépendances nécessitant une migration majeure ou un changement de middleware ne sont pas modifiées dans cette MR.
+
+Les vulnérabilités résiduelles sont documentées pour arbitrage dans les tickets associés.
+
+Étape 22 : mettre à jour le ticket Jira
+
+Avancement technique — RTL-1452
+
+Analyse du rapport Trivy et des dépendances Maven effectuée.
+
+Les mises à jour patch compatibles ont été identifiées et traitées selon la stratégie convenue avec Shien-Haur, sans modification du middleware.
+
+Bilan :
+
+* Dépendances corrigées : [à compléter]
+* Dépendances non corrigées et justification : [à compléter]
+* Build et tests : [à compléter]
+* Vulnérabilités restantes : [à compléter]
+
+MR GitLab : [lien]
+
+Les montées mineures et les dépendances ZooKeeper/Hazelcast seront traitées dans leurs tickets respectifs.
+
+Phase 10 — Ton plan d’exécution au quotidien
+
+Voici la séquence que je te recommande, dans l’ordre.
+
+Checklist d’avancement
+
+0/13
+
+Diagnostic
+
+Récupérer le rapport Trivy initial et la référence du pipeline
+
+Vérifier Java, Maven, profils et branche Git
+
+Compiler le projet avant toute modification
+
+Générer dependency tree et effective POM
+
+RTL-1452
+
+Identifier toutes les mises à jour patch candidates
+
+Appliquer les patchs compatibles par petits groupes
+
+Compiler, tester et comparer Trivy
+
+Créer la première MR
+
+RTL-1455
+
+Analyser et tester les montées mineures
+
+RTL-1453
+
+Évaluer ZooKeeper sans modifier le middleware
+
+RTL-1454
+
+Évaluer Hazelcast sans migration majeure forcée
+
+Finalisation
+
+Documenter les CVE restantes et les blocages
+
+Faire valider les reports et finaliser RTL-1463
+
+Copier la checklist
+
+Les 12 commandes Maven et Git à garder sous la main
+
+1. État du dépôt
+
+git status
+
+2. Version Java
+
+java -version
+
+3. Version Maven
+
+mvn -version
+
+4. Build complet
+
+mvn -pl rtl-core/rtl-application-web -am clean verify
+
+5. Arbre des dépendances
+
+mvn -pl rtl-core/rtl-application-web dependency:tree
+
+6. POM effectif
+
+mvn -pl rtl-core/rtl-application-web help:effective-pom -Dverbose
+
+7. Patchs disponibles
+
+mvn -pl rtl-core/rtl-application-web versions:display-dependency-updates -DallowMajorUpdates=false -DallowMinorUpdates=false
+
+8. Mineures disponibles
+
+mvn -pl rtl-core/rtl-application-web versions:display-dependency-updates -DallowMajorUpdates=false -DallowMinorUpdates=true
+
+9. Dépendances Jackson
+
+mvn -pl rtl-core/rtl-application-web dependency:tree -Dincludes=com.fasterxml.jackson.core:*
+
+10. Dépendances Hazelcast
+
+mvn -pl rtl-core/rtl-application-web dependency:tree -Dincludes=com.hazelcast:*
+
+11. Dépendances ZooKeeper
+
+mvn -pl rtl-core/rtl-application-web dependency:tree -Dincludes=org.apache.zookeeper:*
+
+12. Vérifier les changements
+
+git diff –check && git diff –stat
+
+Ce que je te recommande de faire maintenant
+
+Ne commence pas par changer PostgreSQL, Jackson, ZooKeeper et Hazelcast en même temps.
+
+Ta première action concrète est d’établir le graphe Maven du module RTL, car c’est lui qui déterminera dans quels POM intervenir et quelles versions peuvent réellement être corrigées sans toucher au middleware.
+
+Exécute ces trois commandes, dans cet ordre :
+
+mvn -version
+mvn -pl rtl-core/rtl-application-web \
+  dependency:tree \
+  -DoutputFile=/tmp/rtl-dependencies.txt
+mvn -pl rtl-core/rtl-application-web \
+  help:effective-pom \
+  -Doutput=/tmp/rtl-effective-pom.xml
+
+Ensuite, partage-moi les fichiers suivants (en retirant au besoin les informations internes confidentielles) :
+
+* pom.xml à la racine du projet.
+* rtl-core/rtl-application-web/pom.xml.
+* rtl-dependencies.txt.
+* La sortie de mvn -version.
+
+Avec ces éléments, on pourra passer d’un plan général à une procédure exacte pour RTL-1452 : quel POM ouvrir, quelle ligne modifier, quelle version choisir, quelles dépendances transitives surveiller, quels tests lancer et quel résultat attendre avant le commit.
