@@ -1,0 +1,24 @@
+
+## 1. Vue d'ensemble
+Décris l'objectif réel de l'application, ses fonctionnalités principales et les technologies identifiées dans le repository. Distingue les faits vérifiables des hypothèses.
+
+## 2. Architecture technique
+Identifie les modules, packages et couches techniques. Décris les relations entre les composants et cite les classes principales.
+
+## 3. API et points d'entrée
+Liste les endpoints REST et autres points d'entrée réellement présents : méthode HTTP, URL, paramètres, réponses et classes associées. Si aucune API REST n'existe, indique-le explicitement.
+
+## 4. Logique métier
+Identifie les traitements métier importants, leurs points d'entrée, règles de gestion, validations, appels aux autres services et gestion des erreurs.
+
+## 5. Modèle de données
+Décris les entités, objets métiers, relations et mécanismes de persistance réellement identifiés. Ne suppose pas l'existence d'une base de données.
+
+## 6. Dépendances et configuration
+Analyse les fichiers de build, bibliothèques utilisées, configurations applicatives et dépendances externes. Cite les fichiers concernés.
+
+## 7. Tests et qualité
+Identifie les tests existants et les composants couverts lorsque cela est vérifiable. Signale les limites de l'analyse sans inventer de taux de couverture.
+
+## 8. Traçabilité et limites
+Pour chaque section, cite les chemins des fichiers, classes et méthodes justificatifs. Signale les informations non trouvées, ambiguës ou non vérifiables.
