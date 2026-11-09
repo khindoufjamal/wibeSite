@@ -1,56 +1,15 @@
-Voici une formulation plus professionnelle et technique de tes remarques, adaptée à un compte rendu de tests de RetroDoc destiné aux équipes de développement et aux responsables de la plateforme.
+Gestion des erreurs de signature
 
-Tu peux compléter ta ligne dans Confluence avec les éléments suivants.
+Analyse le code source afin de déterminer le comportement du moteur SABR lorsqu’une erreur de signature est détectée.
 
-Ligne à renseigner — SABR Simulateur
+Précise notamment :
 
-Champ	Contenu proposé
-Testeur	Jamal KHINDOUF
-Repositories	SABR Simulateur
-Template de documentation	Template par défaut, complété par des prompts personnalisés ciblant les fonctionnalités métier et les échanges asynchrones
-Qualité perçue (1–5)	2/5
-Confiance dans la sortie (1–5)	2/5
+* Dans quelles conditions une erreur de signature peut survenir et à quel niveau elle est détectée.
+* Quel composant effectue la vérification de la signature.
+* Quel traitement est déclenché lorsque la signature est invalide.
+* Si le traitement en cours est interrompu, rejeté ou poursuivi.
+* Quel code d’erreur ou message de réponse est généré.
+* Comment l’erreur est propagée et communiquée aux autres composants.
+* Si des mécanismes de journalisation, de reprise ou de nouvelle tentative sont prévus.
 
-Résultats obtenus
-
-L’analyse du repository SABR Simulateur met en évidence plusieurs limites concernant la fiabilité et l’exhaustivité de la documentation générée :
-
-* Hallucinations fonctionnelles : RetroDoc attribue au simulateur des responsabilités qu’il ne porte pas, notamment la gestion des comptes. Cette fonctionnalité ne relève pas du périmètre réel du composant.
-* Inventaire incomplet des messages : la liste des messages échangés n’est pas exhaustive. Certains messages sont présentés comme les « messages principaux », sans justification de ce caractère représentatif.
-* Confusion sur les responsabilités applicatives : RetroDoc attribue au simulateur des traitements réellement exécutés par le moteur SABR, alors que le simulateur se limite à déclencher des appels ou à interagir avec ce dernier.
-* Surinterprétation des tests : l’outil s’appuie fortement sur les scénarios de tests pour décrire le fonctionnement de l’application, au risque de confondre les comportements effectivement implémentés avec les cas de test.
-* Analyse insuffisante des échanges asynchrones : la description des API REST est globalement satisfaisante. En revanche, les échanges par messagerie (Kafka, ActiveMQ, etc.) sont peu ou mal documentés. Leur identification nécessite des instructions explicites dans le prompt personnalisé ; le template par défaut ne permet pas de les restituer correctement.
-
-Améliorations proposées
-
-* Fiabiliser l’analyse fonctionnelle : distinguer explicitement les responsabilités propres au composant de celles des systèmes externes appelés.
-* Améliorer la traçabilité : associer chaque fonctionnalité identifiée aux classes, méthodes ou configurations qui justifient son existence.
-* Garantir une meilleure exhaustivité des messages : inventorier les messages entrants et sortants en précisant leur type, leur canal, leurs producteurs et leurs consommateurs, lorsque ces informations sont identifiables.
-* Distinguer code applicatif et code de test : privilégier le code de production comme source de référence pour la documentation fonctionnelle. Utiliser les tests comme éléments complémentaires de validation.
-* Renforcer la prise en charge des architectures événementielles : détecter automatiquement les producteurs, consommateurs, topics Kafka, queues ActiveMQ, formats de messages et flux asynchrones, sans nécessiter de prompt spécifique.
-* Améliorer le template par défaut : intégrer une section dédiée aux échanges interapplicatifs, synchrones et asynchrones, ainsi qu’une cartographie des flux.
-* Limiter les hallucinations : signaler explicitement les éléments non vérifiables plutôt que de présenter des déductions comme des fonctionnalités avérées.
-
-Version synthétique — directement adaptée aux cellules Confluence
-
-Tu peux utiliser ces deux textes plus courts si tu souhaites éviter de surcharger le tableau.
-
-Colonne « Résultats obtenus »
-
-Documentation partiellement pertinente, avec plusieurs limites identifiées :
-
-* Hallucinations fonctionnelles (attribution erronée de la gestion des comptes au simulateur).
-* Inventaire incomplet des messages échangés.
-* Confusion entre les responsabilités du simulateur et celles du moteur SABR appelé.
-* Analyse trop fortement basée sur les scénarios de tests au détriment du fonctionnement réellement implémenté.
-* Bonne restitution globale des API REST, mais couverture insuffisante des échanges asynchrones (Kafka, ActiveMQ), nécessitant un prompt spécifique.
-
-Colonne « Améliorations proposées »
-
-* Renforcer la fiabilité des descriptions fonctionnelles et la séparation des responsabilités entre composants.
-* Améliorer l’exhaustivité et la traçabilité des messages entrants/sortants.
-* Privilégier le code de production plutôt que les scénarios de tests pour décrire le comportement applicatif.
-* Enrichir le template par défaut avec une analyse automatique des flux asynchrones (Kafka, ActiveMQ), incluant producteurs, consommateurs et messages.
-* Ajouter des références au code source pour justifier les fonctionnalités identifiées et limiter les hallucinations.
-
-Évaluation recommandée : 2/5 en qualité et 2/5 en confiance. Ces notes reflètent une documentation qui semble exploitable pour une première compréhension technique, notamment côté REST, mais qui nécessite une validation manuelle importante sur les responsabilités métier et les flux asynchrones.
+Important : distingue les traitements réellement effectués par le moteur SABR de ceux réalisés par le simulateur. Appuie chaque affirmation sur les classes et méthodes concernées. Si le comportement du moteur n’est pas visible dans le repository, indique explicitement qu’il ne peut pas être déterminé à partir du code disponible, sans inventer de fonctionnement.
