@@ -1,0 +1,209 @@
+
+## 1) VUE D'ENSEMBLE DU PROJET
+
+Analyser le code source de production de SABR Moteur pour identifier son objectif, son périmètre fonctionnel et les services réellement fournis.
+
+### 1.1) Objectif et périmètre
+- Décrire le rôle du moteur dans le système SABR.
+- Identifier les fonctionnalités réellement implémentées.
+- Distinguer les responsabilités du moteur, du simulateur et des systèmes externes.
+- Identifier les opérations déléguées et les limites du périmètre analysé.
+
+### 1.2) Fonctionnalités principales
+Pour chaque fonctionnalité :
+- Objectif fonctionnel.
+- Point d'entrée.
+- Traitement effectué par le moteur.
+- Résultat produit.
+- Classes et méthodes correspondantes.
+
+### 1.3) Stack technique
+Identifier les langages, frameworks, bibliothèques, protocoles, systèmes de messagerie, mécanismes de persistance et outils réellement utilisés.
+
+Ne pas déduire de fonctionnalités à partir du nom du projet ou des scénarios de tests.
+
+## 2) ARCHITECTURE TECHNIQUE
+
+Identifier l'architecture réelle du moteur à partir des modules, packages, services, configurations et dépendances du code de production.
+
+### 2.1) Architecture globale
+- Décrire les couches et leurs responsabilités.
+- Identifier les composants internes et externes.
+- Présenter les interactions synchrones et asynchrones.
+- Générer un diagramme Mermaid si les relations sont vérifiables.
+
+### 2.2) Composants principaux
+Pour chaque composant :
+- Responsabilité technique.
+- Classes et interfaces.
+- Dépendances entrantes et sortantes.
+- Appels vers d'autres composants.
+- Nature des traitements exécutés ou délégués.
+
+### 2.3) Cycle de traitement
+Reconstituer les principaux flux de bout en bout :
+- Réception d'une requête ou d'un message.
+- Validation et contrôles préalables.
+- Traitement effectué par le moteur.
+- Appels éventuels aux systèmes externes.
+- Production et transmission du résultat.
+
+### 2.4) Gestion des erreurs
+Identifier les mécanismes d'exception, de propagation, de rejet, de journalisation et de reprise réellement implémentés.
+
+Distinguer les erreurs détectées par le moteur de celles retournées par les systèmes externes.
+
+## 3) MODÈLE DE DONNÉES
+
+Analyser les objets manipulés par SABR Moteur sans supposer l'existence d'une base de données.
+
+### 3.1) Objets métier
+Identifier les DTO, entités, modèles métier, objets de requête/réponse et structures de messages.
+
+Pour chaque objet, documenter :
+- Nom et rôle.
+- Attributs principaux.
+- Contraintes et validations.
+- Classes et fichiers sources.
+
+### 3.2) Relations et transformations
+- Identifier les relations entre objets.
+- Décrire les mappings et conversions.
+- Documenter les transformations des données au cours des traitements.
+
+### 3.3) Persistance
+Identifier les mécanismes de stockage réellement présents, les entités persistées et les migrations éventuelles.
+
+Si aucune persistance n'est identifiée, l'indiquer explicitement.
+
+## 4) API ET INTERFACES
+
+Documenter exhaustivement les interfaces synchrones et asynchrones réellement implémentées par SABR Moteur.
+
+### 4.1) API REST
+Pour chaque endpoint :
+- Méthode HTTP et URL.
+- Fonctionnalité associée.
+- Paramètres et corps de requête.
+- Format de réponse.
+- Codes HTTP et erreurs.
+- Controller et service concernés.
+
+### 4.2) Échanges asynchrones
+Identifier tous les mécanismes de messagerie présents, notamment Kafka et ActiveMQ s'ils sont utilisés.
+
+Pour chaque flux :
+- Message entrant ou sortant.
+- Nom du message et format.
+- Producteur et consommateur.
+- Topic, queue ou canal.
+- Composant émetteur et destinataire.
+- Traitement déclenché.
+- Gestion des erreurs et acquittements.
+
+Ne pas se limiter aux messages principaux : rechercher un inventaire exhaustif et signaler toute limite de couverture.
+
+### 4.3) Interactions externes
+Identifier les services appelés par le moteur, les protocoles utilisés, les contrats d'échange et les responsabilités de chaque système.
+
+### 4.4) Sécurité des interfaces
+Documenter les mécanismes d'authentification, d'autorisation, de signature et de contrôle d'intégrité réellement implémentés.
+
+## 5) CONFIGURATION ET DÉPLOIEMENT
+
+Identifier les configurations nécessaires au fonctionnement réel de SABR Moteur.
+
+### 5.1) Configuration applicative
+- Fichiers de configuration.
+- Profils d'environnement.
+- Paramètres techniques et fonctionnels.
+- Paramètres des connexions externes.
+
+### 5.2) Configuration des échanges
+- Connexions REST.
+- Connexions aux brokers de messages.
+- Topics, queues et listeners.
+- Timeouts et retries configurés.
+- Paramètres de sécurité et de signature.
+
+### 5.3) Déploiement
+Décrire les mécanismes de build, packaging, CI/CD et déploiement identifiés dans le repository.
+
+### 5.4) Dépendances externes
+Lister les systèmes et bibliothèques indispensables, leur rôle et les versions vérifiables.
+
+Ne jamais exposer les valeurs réelles de secrets, mots de passe ou clés.
+
+## 6) LOGIQUE MÉTIER
+
+Analyser en priorité le code de production pour décrire les règles métier et les traitements effectivement exécutés par SABR Moteur.
+
+### 6.1) Fonctionnalités métier
+Pour chaque fonctionnalité :
+- Objectif.
+- Événement ou appel déclencheur.
+- Données d'entrée.
+- Contrôles effectués.
+- Règles métier appliquées.
+- Résultat et données de sortie.
+- Composants impliqués.
+
+### 6.2) Règles de gestion
+Identifier les validations, conditions, contraintes, décisions et règles de rejet réellement implémentées.
+
+Associer chaque règle aux classes et méthodes correspondantes.
+
+### 6.3) Scénarios nominaux
+Décrire les principales séquences de traitement, étape par étape, depuis le point d'entrée jusqu'au résultat produit.
+
+### 6.4) Cas d'erreur
+Inventorier les cas d'erreur fonctionnels et techniques.
+
+Pour chaque erreur :
+- Conditions de déclenchement.
+- Composant détectant l'erreur.
+- Contrôles et traitements effectués.
+- Code et message d'erreur, s'ils existent.
+- Arrêt, rejet, poursuite ou reprise du traitement.
+- Comportement observable et propagation.
+- Références au code source.
+
+### 6.5) Erreurs de signature
+Rechercher spécifiquement les traitements liés à la vérification des signatures.
+
+Déterminer :
+- Quand et où la signature est contrôlée.
+- Les causes d'échec identifiables.
+- Le comportement du moteur en cas de signature invalide.
+- La réponse ou le rejet généré.
+- La propagation de l'erreur.
+
+Si ces mécanismes ne sont pas visibles dans le code, l'indiquer explicitement.
+
+## 7) TESTS ET QUALITÉ
+
+Analyser les tests existants séparément des fonctionnalités réellement implémentées.
+
+### 7.1) Organisation des tests
+Identifier les tests unitaires, d'intégration et fonctionnels, ainsi que leurs frameworks.
+
+### 7.2) Couverture des traitements
+Associer les tests existants aux composants, règles de gestion, flux et cas d'erreur qu'ils vérifient.
+
+Ne pas inventer de taux de couverture.
+
+### 7.3) Tests des cas d'erreur
+Identifier les tests portant sur :
+- Signatures invalides.
+- Messages malformés.
+- Échecs de validation.
+- Erreurs des systèmes externes.
+- Timeouts et échecs de communication.
+- Erreurs de publication ou de consommation.
+
+Ne présenter ces cas comme implémentés que s'ils sont confirmés par le code de production.
+
+### 7.4) Limites et traçabilité
+Signaler les comportements non vérifiables, les informations ambiguës et les éventuels écarts entre tests et implémentation.
+
+Fournir les références aux fichiers, classes et méthodes utilisés pour établir la documentation.
